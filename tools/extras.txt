@@ -1,0 +1,11 @@
+# Pacotes extras do crew-venv que precisam ser reinstalados após cada update do Kiro Crew.
+# Gerenciado pelo cron venv-extras-watchdog (crew-extras-watchdog.py).
+
+# STT / voz
+boto3>=1.34,<2
+amazon-transcribe>=0.6,<1
+pywhispercpp>=1.5,<2
+
+# voxlocal (TTS edge)
+edge-tts>=7.0
+httpx>=0.27
