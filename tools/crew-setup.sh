@@ -61,6 +61,8 @@ else
   ok "ldconfig executado"
 fi
 
+sleep 1  # aguarda ldconfig propagar antes de verificar
+
 if ldconfig -p | grep -q "libwhisper"; then
   ok "libwhisper registrada: $(ldconfig -p | grep libwhisper | awk '{print $NF}')"
 else
