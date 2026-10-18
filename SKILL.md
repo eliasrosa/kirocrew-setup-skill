@@ -6,7 +6,6 @@ description: >
   packages disappeared, voice_reply turned itself back on, or when setting Crew up
   on a new Linux machine.
 inclusion: auto
-version: 2026-10-17T13:33
 ---
 
 # Skill: crew-setup
