@@ -9,6 +9,9 @@ VENV_PIP="$HOME/.kiro/crew-venv/bin/pip"
 VENV_PYTHON="$HOME/.kiro/crew-venv/bin/python3"
 KIROCREW="kirocrew"
 
+# Diretório base do Kiro Crew — respeita KIROCREW_HOME quando definida
+CREW_HOME="${KIROCREW_HOME:-$HOME/.kiro/crew}"
+
 ok()      { echo "  ✅  $*"; }
 warn()    { echo "  ⚠️   $*"; WARNINGS+=("$*"); }
 fail()    { echo "  ❌  $*"; ERRORS+=("$*"); }
@@ -157,7 +160,7 @@ fi
 
 # ── 6. Modelos ─────────────────────────────────────────────────────────────────
 section "Modelos STT (Whisper)"
-WHISPER_DIR="$HOME/.kiro/crew/models/whisper"
+WHISPER_DIR="$CREW_HOME/models/whisper"
 if [ -d "$WHISPER_DIR" ] && ls "$WHISPER_DIR"/*.bin &>/dev/null 2>&1; then
   ok "Modelos encontrados:"
   ls -lh "$WHISPER_DIR"/*.bin 2>/dev/null | awk '{print "       " $5 "  " $9}'
@@ -172,7 +175,7 @@ else
 fi
 
 section "Modelo TTS (Piper)"
-PIPER_MODEL="$HOME/.kiro/crew/models/piper/pt_BR-faber-medium.onnx"
+PIPER_MODEL="$CREW_HOME/models/piper/pt_BR-faber-medium.onnx"
 if [ -f "$PIPER_MODEL" ]; then
   ok "pt_BR-faber-medium.onnx ($(du -h "$PIPER_MODEL" | cut -f1))"
 else
