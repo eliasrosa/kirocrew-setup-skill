@@ -74,6 +74,8 @@ crew-setup/
     └── extras.txt        # lista de pacotes extras do venv
 ```
 
+> **Nota sobre o padrão:** o padrão `create-skill` recomenda scripts em Python e um `check.py` com exit 0/1. Esta skill usa bash intencionalmente — os scripts interagem com `systemctl`, `ldconfig`, `nvidia-smi` e `ldconfig`, que são ferramentas de sistema nativas do Linux e mais diretas em shell. O `crew-check.sh` cumpre o papel do `check.py` (diagnóstico com saída visual de ✓/✗), porém em bash. Skills de sistema com forte acoplamento ao SO são uma exceção justificada ao padrão Python.
+
 ## Personalizar pacotes extras
 
 Edite `tools/extras.txt` para adicionar ou remover pacotes.
