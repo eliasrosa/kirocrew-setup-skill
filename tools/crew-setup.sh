@@ -15,6 +15,9 @@ LDCONF="/etc/ld.so.conf.d/kirocrew-whisper.conf"
 SITE_PKGS="$HOME/.kiro/crew-venv/lib/python3.12/site-packages"
 KIROCREW="kirocrew"
 
+# Diretório base do Kiro Crew — respeita KIROCREW_HOME quando definida
+CREW_HOME="${KIROCREW_HOME:-$HOME/.kiro/crew}"
+
 # ── helpers ──────────────────────────────────────────────────────────────────
 ok()   { echo "  ✅  $*"; }
 fail() { echo "  ❌  $*"; FAILED+=("$*"); }
@@ -86,7 +89,7 @@ fi
 if $KIROCREW config set voice_reply.enabled false 2>/dev/null && \
    $KIROCREW config set voice_reply.provider piper 2>/dev/null && \
    $KIROCREW config set voice_reply.piper_model \
-     "~/.kiro/crew/models/piper/pt_BR-faber-medium.onnx" 2>/dev/null; then
+     "$CREW_HOME/models/piper/pt_BR-faber-medium.onnx" 2>/dev/null; then
   ok "TTS: voice_reply desativado no Telegram, piper_model configurado"
 else
   fail "Erro ao configurar TTS"
