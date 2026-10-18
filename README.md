@@ -7,7 +7,7 @@ Verifica compatibilidade, reinstala pacotes extras, recompila STT com CUDA e apl
 ## Instalação
 
 ```bash
-git clone https://github.com/<usuario>/kirocrew-setup-skill ~/.kiro/skills/crew-setup
+git clone https://github.com/eliasrosa/kirocrew-setup-skill ~/.kiro/skills/crew-setup
 ```
 
 A skill é carregada automaticamente pelo Kiro Crew na próxima sessão.
