@@ -5,12 +5,27 @@
 #
 # Uso: bash ~/.kiro/skills/crew-setup/tools/crew-check.sh
 
-VENV_PIP="$HOME/.kiro/crew-venv/bin/pip"
-VENV_PYTHON="$HOME/.kiro/crew-venv/bin/python3"
+# Detectar venv ativo via symlink (padrão pós-0.10.0)
+if [ -L "$HOME/.kiro/crew-venv-current" ]; then
+  CREW_VENV=$(readlink -f "$HOME/.kiro/crew-venv-current")
+else
+  # Fallback para venv legado (pré-0.10.0)
+  CREW_VENV="$HOME/.kiro/crew-venv"
+fi
+
+VENV_PIP="$CREW_VENV/bin/pip"
+VENV_PYTHON="$CREW_VENV/bin/python3"
 KIROCREW="kirocrew"
 
 # Diretório base do Kiro Crew — respeita KIROCREW_HOME quando definida
 CREW_HOME="${KIROCREW_HOME:-$HOME/.kiro/crew}"
+
+# Descobrir site-packages dinamicamente
+if [ -x "$VENV_PYTHON" ]; then
+  SITE_PKGS=$("$VENV_PYTHON" -c 'import site; print(site.getsitepackages()[0])' 2>/dev/null || echo "$CREW_VENV/lib/python3.12/site-packages")
+else
+  SITE_PKGS="$CREW_VENV/lib/python3.12/site-packages"
+fi
 
 ok()      { echo "  ✅  $*"; }
 warn()    { echo "  ⚠️   $*"; WARNINGS+=("$*"); }
@@ -116,15 +131,25 @@ done
 
 # ── 5. Python e venv do Crew ───────────────────────────────────────────────────
 section "Python e venv do Crew"
+
+# Mostrar qual venv está sendo usado
+if [ -L "$HOME/.kiro/crew-venv-current" ]; then
+  ok "Venv ativo: $CREW_VENV (via symlink crew-venv-current)"
+else
+  warn "Symlink crew-venv-current não existe — usando venv legado"
+  info "Venv: $CREW_VENV"
+fi
+
 if [ -f "$VENV_PYTHON" ]; then
   PY_VERSION=$("$VENV_PYTHON" --version 2>&1)
-  ok "venv do Crew: $PY_VERSION"
+  ok "Python: $PY_VERSION"
 else
-  fail "venv do Crew não encontrado em ~/.kiro/crew-venv — Kiro Crew instalado?"
+  fail "venv do Crew não encontrado — Kiro Crew instalado?"
 fi
 
 if command -v $KIROCREW &>/dev/null; then
-  CREW_VERSION=$(grep "^Version:" ~/.kiro/crew-venv/lib/python3.12/site-packages/kirocrew-*.dist-info/METADATA 2>/dev/null | head -1 | awk '{print $2}')
+  # Detectar versão do METADATA no venv ativo (não no legado)
+  CREW_VERSION=$(find "$SITE_PKGS" -maxdepth 1 -name 'kirocrew-*.dist-info' -exec grep "^Version:" {}/METADATA \; 2>/dev/null | head -1 | awk '{print $2}')
   ok "kirocrew CLI — versão ${CREW_VERSION:-desconhecida}"
 else
   fail "kirocrew CLI não encontrado no PATH"
@@ -143,22 +168,50 @@ for pkg in boto3 amazon-transcribe pywhispercpp edge-tts httpx; do
     VERSION=$("$VENV_PIP" show "$pkg" 2>/dev/null | grep "^Version:" | awk '{print $2}')
     ok "$pkg $VERSION — ${PKG_DESC[$pkg]}"
   else
-    warn "$pkg não instalado — ${PKG_DESC[$cmd]}"
+    warn "$pkg não instalado — ${PKG_DESC[$pkg]}"
     suggest "Rodar crew-setup.sh para instalar todos os pacotes extras"
   fi
 done
 
 # Verificar se pywhispercpp foi compilado com CUDA
 if "$VENV_PIP" show pywhispercpp &>/dev/null 2>&1; then
-  if ls ~/.kiro/crew-venv/lib/python3.12/site-packages/libggml-cuda* &>/dev/null 2>&1; then
-    ok "pywhispercpp compilado com CUDA (libggml-cuda encontrada)"
+  if ls "$SITE_PKGS"/libggml-cuda* &>/dev/null 2>&1; then
+    CUDA_LIB=$(ls -1 "$SITE_PKGS"/libggml-cuda.so.0 2>/dev/null | head -1)
+    CUDA_SIZE=$(du -h "$CUDA_LIB" 2>/dev/null | cut -f1)
+    ok "pywhispercpp compilado com CUDA (libggml-cuda.so.0 ${CUDA_SIZE})"
   else
     warn "pywhispercpp instalado mas sem CUDA — STT rodará em CPU"
     suggest "Rodar crew-setup.sh para recompilar com GGML_CUDA=1"
   fi
 fi
 
-# ── 6. Modelos ─────────────────────────────────────────────────────────────────
+# ── 6. LD_PRELOAD no systemd (crítico para CUDA) ───────────────────────────────
+section "LD_PRELOAD no systemd (crítico para CUDA)"
+OVERRIDE_FILE="/etc/systemd/system/kirocrew.service.d/override.conf"
+if [ -f "$OVERRIDE_FILE" ]; then
+  PRELOAD_LINE=$(grep "LD_PRELOAD" "$OVERRIDE_FILE" 2>/dev/null || true)
+  if [ -n "$PRELOAD_LINE" ]; then
+    # Extrair o path do LD_PRELOAD
+    PRELOAD_PATH=$(echo "$PRELOAD_LINE" | grep -oP 'LD_PRELOAD=\K[^"]+' | tr -d '"')
+    if [ -f "$PRELOAD_PATH" ]; then
+      ok "LD_PRELOAD configurado: $PRELOAD_PATH"
+    else
+      warn "LD_PRELOAD configurado mas arquivo não existe: $PRELOAD_PATH"
+      suggest "Atualizar o path no override: $SITE_PKGS/libggml-cuda.so.0"
+    fi
+  else
+    warn "override.conf existe mas sem LD_PRELOAD"
+    suggest "Adicionar LD_PRELOAD=$SITE_PKGS/libggml-cuda.so.0"
+  fi
+else
+  warn "LD_PRELOAD não configurado no systemd — STT pode cair em CPU"
+  suggest "Rodar crew-setup.sh ou configurar manualmente:"
+  suggest "sudo mkdir -p /etc/systemd/system/kirocrew.service.d"
+  suggest "echo '[Service]' | sudo tee $OVERRIDE_FILE"
+  suggest "echo 'Environment=\"LD_PRELOAD=$SITE_PKGS/libggml-cuda.so.0\"' | sudo tee -a $OVERRIDE_FILE"
+fi
+
+# ── 7. Modelos ─────────────────────────────────────────────────────────────────
 section "Modelos STT (Whisper)"
 WHISPER_DIR="$CREW_HOME/models/whisper"
 if [ -d "$WHISPER_DIR" ] && ls "$WHISPER_DIR"/*.bin &>/dev/null 2>&1; then
@@ -183,13 +236,23 @@ else
   suggest "https://huggingface.co/rhasspy/piper-voices/tree/main/pt/pt_BR/faber/medium"
 fi
 
-# ── 7. Configurações do gateway ───────────────────────────────────────────────
+# ── 8. Configurações do gateway ───────────────────────────────────────────────
 section "Configurações recomendadas do gateway"
 
 _config_check() {
   local key="$1" expected="$2" desc="$3"
   local actual
   actual=$(kirocrew config get "$key" 2>/dev/null | tr -d '"' | xargs)
+  # `config get` não resolve chaves de mapas livres (ex.: agent.role_models.subagent
+  # dá "Unknown key"), mas o `set` grava. Fallback: ler direto do config.json.
+  if [ -z "$actual" ] && [ -x "$VENV_PYTHON" ]; then
+    actual=$("$VENV_PYTHON" -c '
+import json, sys
+v = json.load(open(sys.argv[1]))
+for p in sys.argv[2].split("."):
+    v = v.get(p) if isinstance(v, dict) else None
+print("" if v is None else v)' "$CREW_HOME/config.json" "$key" 2>/dev/null)
+  fi
   if [ "$actual" = "$expected" ]; then
     ok "$key = $expected — $desc"
   else
@@ -204,6 +267,10 @@ _config_check "stt.model"         "large-v3-turbo"  "Melhor modelo de STT"
 _config_check "stt.language_code" "pt-BR"           "Idioma do STT"
 _config_check "stt.polish"        "True"            "Pós-processamento da transcrição"
 _config_check "voice_reply.enabled" "False"         "Desativa envio automático de áudio no Telegram"
+_config_check "agent.model"            "auto"       "Modelo principal automático (id fixo quebra quando sai do catálogo)"
+_config_check "agent.fallback_model"   "auto"       "Modelo de fallback automático"
+_config_check "agent.role_models.subagent"   "auto" "Modelo dos sub-agentes automático"
+_config_check "agent.role_models.background" "auto" "Modelo de tarefas em background automático"
 _config_check "agent.reasoning_effort" "max"        "Máxima qualidade de raciocínio"
 _config_check "agent.approval_mode"    "auto"       "Auto-aprovação de ferramentas"
 _config_check "agent.tool_search"      "True"       "Busca de ferramentas sob demanda"
@@ -212,7 +279,27 @@ _config_check "knowledge.auto_add_documents"     "True" "Ingestão automática d
 _config_check "dashboard.theme_color"  "amoled-midnight" "Tema recomendado"
 _config_check "dashboard.widget_density" "more"    "Densidade de widgets"
 
-# ── 8. Resultado final ─────────────────────────────────────────────────────────
+# ── 9. Verificar se STT está em GPU no log ────────────────────────────────────
+section "STT no log do gateway"
+if systemctl is-active kirocrew.service &>/dev/null; then
+  GPU_LINE=$(journalctl -u kirocrew.service -n 100 --no-pager 2>/dev/null | grep -E 'CUDA0.*backend|backend_init_gpu.*CUDA0' | tail -1)
+  if [ -n "$GPU_LINE" ]; then
+    ok "STT na GPU confirmado no log"
+    echo "     $GPU_LINE"
+  else
+    CPU_LINE=$(journalctl -u kirocrew.service -n 100 --no-pager 2>/dev/null | grep -i "no GPU found" | tail -1)
+    if [ -n "$CPU_LINE" ]; then
+      warn "STT rodando em CPU — LD_PRELOAD pode estar faltando"
+      echo "     $CPU_LINE"
+    else
+      info "Sem linha de backend_init_gpu no log — pode ser PID antigo ou ainda não transcreveu"
+    fi
+  fi
+else
+  warn "kirocrew.service não está rodando"
+fi
+
+# ── 10. Resultado final ────────────────────────────────────────────────────────
 echo ""
 echo "════════════════════════════════════════════════"
 if [ ${#ERRORS[@]} -eq 0 ] && [ ${#WARNINGS[@]} -eq 0 ] && [ ${#SUGGESTIONS[@]} -eq 0 ]; then
@@ -225,5 +312,7 @@ fi
 echo ""
 echo "  Próximo passo:"
 echo "  bash ~/.kiro/skills/crew-setup/tools/crew-setup.sh"
+echo "  Depois do restart, auditar logs/modelos/drift:"
+echo "  python3 ~/.kiro/skills/crew-setup/tools/crew-audit.py"
 echo "════════════════════════════════════════════════"
 echo ""
