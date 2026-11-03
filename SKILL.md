@@ -37,7 +37,7 @@ Compatibilidade); ajustes pontuais de config que não envolvem venv/STT.
 | Operação | Comando |
 |---|---|
 | Diagnóstico | `bash ~/.kiro/skills/crew-setup/tools/crew-check.sh` |
-| Setup/restauração | `bash ~/.kiro/skills/crew-setup/tools/crew-setup.sh` |
+| Setup/restauração | `bash ~/.kiro/skills/crew-setup/tools/crew-setup.sh` (`--rebuild` recompila o pywhispercpp) |
 | Auditoria pós-update | `python3 ~/.kiro/skills/crew-setup/tools/crew-audit.py` (`--no-save`, `--since "2 hours ago"`) |
 | Confirmar CUDA no STT | `journalctl -u kirocrew.service -n 50 --no-pager \| grep -iE 'CUDA0\|backend_init'` |
 | Confirmar libs do whisper | `ldconfig -p \| grep whisper` |
@@ -92,9 +92,9 @@ Settings no dashboard.
 | Passo | O que faz |
 |-------|-----------|
 | 1/6 | Instala pacotes extras do `extras.txt` (boto3, amazon-transcribe, edge-tts, httpx) |
-| 2/6 | Recompila pywhispercpp com `GGML_CUDA=1` (~10-15 min) |
-| 3/6 | Configura ldconfig para as libs CUDA do whisper |
-| 4/6 | **Configura LD_PRELOAD no systemd** (override.conf) — crítico para CUDA funcionar |
+| 2/6 | Instala pywhispercpp com CUDA do wheel guardado; sem wheel, compila com `GGML_CUDA=1` (~10-15 min) e guarda |
+| 3/6 | Configura ldconfig para as libs CUDA do whisper, pelo caminho estável `crew-venv-current` |
+| 4/6 | **Configura LD_PRELOAD no systemd** (override.conf), pelo caminho estável — crítico para CUDA funcionar |
 | 5/6 | Aplica configurações de STT (provider, modelo, idioma), TTS (piper, voice_reply off) e modelos de LLM em `auto` (`agent.model`, `fallback_model`, `role_models.*`) |
 | 6/6 | Reinicia o Crew e confirma `using CUDA0 backend` no log |
 
@@ -105,6 +105,25 @@ Os scripts detectam automaticamente o venv ativo:
 - Senão → fallback para `~/.kiro/crew-venv` (legado)
 
 Isso permite que a skill funcione em qualquer versão do Kiro Crew (0.9, 0.10, 0.11...).
+
+### Caminho estável nos arquivos de sistema
+
+O Crew instala cada versão numa pasta nova (`crew-venv-<versão>`) e troca o alvo do link
+`~/.kiro/crew-venv-current` a cada update. O `crew-setup.sh` grava **o link, não o alvo
+resolvido**, no `override.conf` (`LD_PRELOAD`) e no `kirocrew-whisper.conf` (ldconfig).
+Assim esses arquivos não ficam velhos no update e não precisam de `sudo` de novo.
+O `crew-check.sh` e o `crew-audit.py` avisam quando um deles ainda usa caminho com versão.
+
+Não transformar `~/.kiro/crew-venv` (sem versão) em link: o Crew trata essa pasta como
+fallback legado e não a renomeia, move ou converte.
+
+### Wheel do pywhispercpp guardado
+
+O venv novo vem sem extras por design, então o pywhispercpp precisa ser reinstalado a
+cada update. O passo 2/6 compila o wheel com CUDA **uma vez** e o guarda em
+`.data/wheels/<cpXY>-cuda<versão>/`. Nos updates seguintes reinstala dele em segundos.
+Recompila sozinho quando muda a versão do Python ou do CUDA; para forçar:
+`bash tools/crew-setup.sh --rebuild`.
 
 ## Estrutura da skill
 
@@ -118,7 +137,7 @@ crew-setup/
     └── extras.txt        # lista de pacotes extras do venv
 ```
 
-`.data/` (gitignored) guarda o snapshot de config da última auditoria.
+`.data/` (gitignored) guarda o snapshot de config da última auditoria e o wheel do pywhispercpp (`.data/wheels/`).
 
 > **Nota sobre o padrão:** o padrão `create-skill` recomenda scripts em Python e um `check.py` com exit 0/1. Esta skill usa bash intencionalmente — os scripts interagem com `systemctl`, `ldconfig`, `nvidia-smi` e paths de sistema, que são ferramentas de sistema nativas do Linux e mais diretas em shell. O `crew-check.sh` cumpre o papel do `check.py` (diagnóstico com saída visual de ✓/✗), porém em bash. Skills de sistema com forte acoplamento ao SO são uma exceção justificada ao padrão Python.
 
@@ -152,6 +171,7 @@ O `crew-setup.sh` usa esse arquivo como fonte da verdade.
 | Sub-agentes falham com `InvalidModelError: model '...' is not available` | o update tirou o modelo do catálogo e ele ficou fixo em `agent.role_models.*` | `kirocrew config set agent.role_models.subagent auto` (usuário roda); `crew-audit.py` lista todas as chaves afetadas |
 | `ERROR: ld.so: ... crew-venv-<antigo> ... cannot be preloaded` em todo comando | `LD_PRELOAD` velho no systemd e herdado pelo shell | `crew-setup.sh` passo 4/6; no terminal já aberto, `unset LD_PRELOAD` |
 | `whisper_full_with_state: failed to decode` isolado | áudio curto ou silencioso | nenhuma; só investigar se repetir |
+| `sudo: .../crew-audit.py: comando não encontrado` ou "Não rode com sudo" | script chamado com `sudo` | rodar como o próprio usuário (`python3 .../crew-audit.py`, `bash .../crew-setup.sh`); o setup pede a senha sozinho nos passos 3, 4 e 6 |
 
 ## O gotcha do LD_PRELOAD
 

@@ -280,10 +280,15 @@ def audit_stale_paths() -> None:
             text = Path(f).read_text()
         except OSError:
             continue
-        olds = {f"crew-venv-{v}" for v in rx.findall(text)} - {current}
+        cited = {f"crew-venv-{v}" for v in rx.findall(text)}
+        olds = cited - {current}
         if olds:
             found = True
-            fail(f"{f} cita {', '.join(sorted(olds))} → apontar para {current} (crew-setup.sh passos 3-4)")
+            fail(f"{f} cita {', '.join(sorted(olds))} → rodar crew-setup.sh (passos 3-4)")
+        elif cited and f.startswith("/etc/"):
+            found = True
+            warn(f"{f} usa {current} com versão → vai ficar velho no próximo update; "
+                 "crew-setup.sh grava pelo caminho estável crew-venv-current")
     env_preload = os.environ.get("LD_PRELOAD", "")
     if env_preload and not Path(env_preload).exists():
         found = True
@@ -351,6 +356,13 @@ def audit_drift(cfg: dict, save: bool) -> None:
 
 
 def main() -> int:
+    # Via sudo o HOME vira /root: a auditoria leria a config e o login do kiro-cli
+    # no lugar errado e deixaria .data/ com dono root. Root sem sudo (container) passa.
+    if hasattr(os, "geteuid") and os.geteuid() == 0 and os.environ.get("SUDO_USER"):
+        print("❌ Não rode com sudo. A auditoria só lê; rode como o seu usuário:")
+        print(f"   python3 {Path(__file__).resolve()}")
+        return 2
+
     ap = argparse.ArgumentParser(description="Auditoria pós-update do Kiro Crew")
     ap.add_argument("--since", help="janela do journalctl (padrão: último start do serviço)")
     ap.add_argument("--no-save", action="store_true", help="não atualizar o snapshot de config")
