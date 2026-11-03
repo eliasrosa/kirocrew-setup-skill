@@ -40,7 +40,9 @@ from pathlib import Path
 CREW_HOME = Path(os.environ.get("KIROCREW_HOME") or Path.home() / ".kiro/crew")
 CONFIG_FILE = CREW_HOME / "config.json"
 AGENTS_DIR = Path.home() / ".kiro/agents"
-VENV_LINK = Path.home() / ".kiro/crew-venv-current"
+# O Crew deriva o venv do data home: <KIROCREW_HOME>-venv-current (link estável).
+VENV_LINK = Path(f"{str(CREW_HOME).rstrip('/')}-venv-current")
+OVERRIDE_FILE = Path("/etc/systemd/system/kirocrew.service.d/override.conf")
 SKILL_DIR = Path(__file__).resolve().parent.parent
 BASELINE = SKILL_DIR / ".data" / "config-baseline.json"
 SERVICE = "kirocrew.service"
@@ -68,11 +70,14 @@ KNOWN = [
      "trocar para 'auto' ou um id da lista (ver seção Modelos)"),
     (r"LD_PRELOAD cannot be preloaded", "warn",
      "LD_PRELOAD aponta para venv que não existe mais",
-     "rodar crew-setup.sh (passo 4/6); se só aparece em PID antigo, já foi corrigido"),
+     "rodar crew-setup.sh (o passo 4/7 remove o LD_PRELOAD legado)"),
     (r"no GPU found", "fail",
-     "STT caiu para CPU", "conferir LD_PRELOAD e libggml-cuda (crew-setup.sh passos 2-4)"),
+     "STT caiu para CPU", "conferir o ldconfig e a libggml-cuda (crew-setup.sh passos 2-3)"),
+    (r"voice_reply\.provider '([^']+)' was removed", "warn",
+     "provider de TTS removido do Crew (o 0.11 tirou o piper)",
+     "crew-setup.sh passo 5/7 grava voice_reply.provider = system"),
     (r"ModuleNotFoundError: No module named '([^']+)'", "fail",
-     "pacote extra sumiu do venv", "rodar crew-setup.sh (passo 1/6) ou incluir em extras.txt"),
+     "pacote sumiu do venv", "rodar crew-setup.sh: os passos 1-2 e o install.py das skills vinculadas reinstalam"),
     (r"AcpAuthRequired|session has expired", "fail",
      "login/sessão do kiro-cli expirou", "kiro-cli logout && kiro-cli login"),
     (SUBAGENT_RX, "warn",
@@ -234,7 +239,9 @@ def collect_model_refs(cfg: dict) -> tuple[list[tuple[str, str]], set[str]]:
         if model:
             where = f"agents/{Path(f).name} → model"
             refs.append((where, model))
-            if "do not edit" in str(spec.get("description", "")):
+            # Specs que o Crew gera sozinho (--readonly, skill-view): regeneram, não editar.
+            desc = str(spec.get("description", "")).lower()
+            if "do not edit" in desc or "auto-managed" in desc:
                 derived.add(where)
     return refs, derived
 
@@ -293,6 +300,14 @@ def audit_stale_paths() -> None:
     if env_preload and not Path(env_preload).exists():
         found = True
         warn(f"LD_PRELOAD do shell atual aponta para arquivo inexistente: {env_preload} → `unset LD_PRELOAD` ou abrir terminal novo")
+    try:
+        legacy_preload = "LD_PRELOAD" in OVERRIDE_FILE.read_text()
+    except OSError:
+        legacy_preload = False
+    if legacy_preload:
+        found = True
+        warn(f"{OVERRIDE_FILE} ainda tem LD_PRELOAD: não é necessário com o ldconfig e pesa em todo "
+             "processo filho do gateway → crew-setup.sh (passo 4/7 remove)")
     if not found:
         ok("nenhuma referência a venv antigo")
 

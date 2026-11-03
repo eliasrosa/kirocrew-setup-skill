@@ -5,8 +5,9 @@ description: >
   stopped, voice broke, CUDA vanished, pywhispercpp failed to build, extra venv
   packages disappeared, voice_reply turned itself back on, subagents fail with
   "model is not available", config changed after the update, errors or warnings
-  in the gateway log need a double check, or when setting Crew up on a new Linux
-  machine.
+  in the gateway log need a double check, a linked skill (voxlocal, browser
+  automation) lost its packages, or when setting Crew up on a new Linux machine,
+  with or without a GPU.
 inclusion: auto
 ---
 
@@ -14,145 +15,181 @@ inclusion: auto
 
 ## Visão Geral
 
-Diagnostica e restaura o ambiente completo do Kiro Crew num Linux: pacotes extras do
-venv, STT (Whisper) compilado com CUDA, **LD_PRELOAD no systemd** (crítico!), configs
-de STT/TTS do gateway e restart. Pode ser compartilhada como repositório independente
-no GitHub.
+Configura e restaura o Kiro Crew num Linux conforme o **perfil da máquina**: STT local na
+GPU ou na CPU, Amazon Transcribe ou desligado; voz do TTS nativo; e as **skills
+vinculadas** (voxlocal e browser-automation). Na primeira execução detecta o ambiente,
+pergunta o perfil e o guarda em `.data/profile.env`. Nos updates seguintes reusa o perfil
+sem perguntar. Depois do restart, a auditoria revisa log, modelos e drift de config.
 
 ## Quando Usar
 
-- Após `kirocrew update` ou update automático do Crew (recria o venv e apaga pacotes extras)
-- STT parou de funcionar / sumiu do dashboard
-- `ModuleNotFoundError: No module named 'edge_tts'` ou `'httpx'`
-- CUDA não aparece no log (`whisper_backend_init_gpu`)
-- **"no GPU found" mesmo com libs CUDA presentes** — falta LD_PRELOAD no systemd
-- `voice_reply.enabled` voltou para `true` (áudio indesejado no Telegram)
-- Configurando o Crew numa máquina nova (Linux)
+- Após `kirocrew update` ou update automático do Crew (o venv novo vem sem os extras)
+- STT parou, caiu para CPU ("no GPU found") ou sumiu do dashboard
+- `ModuleNotFoundError` de pacote que estava no venv (pywhispercpp, edge_tts, piper...)
+- Áudio indesejado no Telegram (`voice_reply.enabled` ou `telegram.voice_replies` voltaram a `true`)
+- TTS do dashboard falando com sotaque errado depois do update (provider `piper` removido no 0.11)
+- Sub-agentes falham com "model is not available"
+- Configurar o Crew numa máquina nova, com ou sem GPU
 
-**Quando NÃO usar:** macOS/Windows nativos (`systemctl`/`ldconfig` não existem — ver
-Compatibilidade); ajustes pontuais de config que não envolvem venv/STT.
+**Quando NÃO usar:** macOS/Windows nativos (sem `systemctl`/`ldconfig`); ajuste pontual de
+config que não envolve venv, STT, voz ou skills vinculadas.
 
 ## Referência Rápida
 
 | Operação | Comando |
 |---|---|
-| Diagnóstico | `bash ~/.kiro/skills/crew-setup/tools/crew-check.sh` |
-| Setup/restauração | `bash ~/.kiro/skills/crew-setup/tools/crew-setup.sh` (`--rebuild` recompila o pywhispercpp) |
+| Diagnóstico (só lê) | `bash ~/.kiro/skills/crew-setup/tools/crew-check.sh` |
+| Ver o plano, sem alterar | `bash ~/.kiro/skills/crew-setup/tools/crew-setup.sh --plan` |
+| Setup/restauração | `bash ~/.kiro/skills/crew-setup/tools/crew-setup.sh` |
+| Mudar o perfil | `bash ~/.kiro/skills/crew-setup/tools/crew-setup.sh --reconfigure` |
+| Sem perguntas (automação) | `bash ~/.kiro/skills/crew-setup/tools/crew-setup.sh --yes` |
+| Recompilar o pywhispercpp | `bash ~/.kiro/skills/crew-setup/tools/crew-setup.sh --rebuild` |
 | Auditoria pós-update | `python3 ~/.kiro/skills/crew-setup/tools/crew-audit.py` (`--no-save`, `--since "2 hours ago"`) |
-| Confirmar CUDA no STT | `journalctl -u kirocrew.service -n 50 --no-pager \| grep -iE 'CUDA0\|backend_init'` |
-| Confirmar libs do whisper | `ldconfig -p \| grep whisper` |
-| Conferir LD_PRELOAD | `cat /etc/systemd/system/kirocrew.service.d/override.conf` |
-| Conferir pacotes do venv | `~/.kiro/crew-venv-current/bin/pip list \| grep -Ei "boto3\|amazon\|pywhisper\|edge-tts\|httpx"` |
-| Editar lista de extras | `tools/extras.txt` (fonte da verdade do setup) |
+| Confirmar CUDA no STT | `journalctl -u kirocrew.service -n 80 --no-pager \| grep -E 'CUDA0\|no GPU'` |
+| Confirmar libs do whisper | `ldconfig -p \| grep ggml` |
+
+Nenhum script roda com `sudo`: o setup pede a senha sozinho só nos passos que mexem no sistema.
+
+**Quem roda o quê:** o agente roda `crew-check.sh`, `crew-setup.sh --plan` e `crew-audit.py`
+(só leem). O `crew-setup.sh` sem `--plan` pede `sudo`, altera a config do Crew e reinicia o
+gateway (o que derruba a sessão do próprio agente), então quem roda é o usuário, no terminal.
+
+## Perfil da máquina
+
+O setup não presume GPU nem CUDA. Na primeira execução (ou com `--reconfigure`) ele mostra
+o que detectou e pergunta, com o detectado como padrão:
+
+| Pergunta | Opções | Padrão |
+|---|---|---|
+| Transcrição (STT) | `gpu` (whisper na GPU NVIDIA), `cpu` (whisper na CPU), `transcribe` (Amazon Transcribe), `off` | `gpu` com GPU NVIDIA **e** CUDA toolkit; senão `cpu` |
+| Modelo do whisper | `large-v3-turbo`, `medium`, `small`, `base` | `large-v3-turbo` na GPU, `small` na CPU |
+| Idioma do STT | código BCP-47 | o do locale (`LANG`), senão `pt-BR` |
+| Voz do TTS nativo | voz do espeak-ng (`-` = não mexer) | idioma do STT em minúsculas (`pt-br`) |
+| Skills vinculadas | uma pergunta S/n por skill do `linked-skills.txt` | todas |
+
+O perfil fica em `.data/profile.env` (gitignored), em texto `CHAVE=valor`. Pode ser editado à
+mão. Sem terminal interativo (cron, agente) ou com `--yes`, o setup usa o perfil salvo ou o
+detectado, sem perguntar.
+
+**Validação antes de mexer em nada:** perfil `gpu` sem GPU NVIDIA, sem CUDA toolkit ou sem
+compilador (quando não há wheel guardado) para o setup com a correção e a sugestão de
+trocar o perfil. Falta de `ffmpeg` ou `espeak-ng` vira pendência no resumo final.
+
+## O que o crew-setup.sh faz
+
+| Passo | O que faz | Perfis |
+|---|---|---|
+| 1/7 | Pacotes extras: `requirements-transcribe.txt` (perfil `transcribe`) e `.data/extras.txt` do usuário | todos |
+| 2/7 | pywhispercpp: na GPU, do wheel com CUDA guardado (ou compila e guarda); na CPU, do PyPI | `gpu`, `cpu` |
+| 3/7 | ldconfig: registra o site-packages do venv pelo **caminho estável** `<KIROCREW_HOME>-venv-current` | `gpu` |
+| 4/7 | Remove o `LD_PRELOAD` legado do systemd (`--ld-preload` grava, como plano B) | todos |
+| 5/7 | Config do gateway: STT do perfil, TTS nativo (`system` + voz), modelos de LLM em `auto` | todos |
+| 6/7 | Skills vinculadas: clona se faltar, roda o `tools/install.py` e o `tools/check.py` de cada uma | todos |
+| 7/7 | Reinicia o serviço e confirma `using CUDA0 backend` no log do start atual | todos |
+
+## Skills vinculadas
+
+`tools/linked-skills.txt` lista as skills que o setup restaura, uma por linha
+(`<pasta> <url-do-repo>`). A lista é fechada: o setup só executa código das skills listadas.
+
+| Skill | O que o setup faz por ela |
+|---|---|
+| [voxlocal](https://github.com/eliasrosa/voxlocal-skill) (TTS no Telegram) | roda `tools/install.py`: Edge, Piper, voz pt-BR e, se optado, F5-TTS; desliga o áudio nativo duplicado |
+| [browser-automation](https://github.com/eliasrosa/browser-automation-skill) (Chrome via CDP) | roda `tools/check.py`: playwright-cli, Node, Chrome, remote debugging |
+
+O que é específico de cada skill fica nela (fonte única): o crew-setup só chama o
+`install.py` e o `check.py`. Para vincular outra skill, siga a convenção da skill
+`create-skill` (seção "Instalação") e adicione a linha no `linked-skills.txt`.
 
 ## Fluxo recomendado
 
-**1. Diagnóstico primeiro:**
-```bash
-bash ~/.kiro/skills/crew-setup/tools/crew-check.sh
-```
-Verifica SO, GPU, dependências, venv, modelos, LD_PRELOAD e configs. Avisa o que precisa corrigir.
-
-**2. Setup/restauração:**
-```bash
-bash ~/.kiro/skills/crew-setup/tools/crew-setup.sh
-```
-
-**3. Auditoria pós-update (obrigatória, depois do restart):**
-```bash
-python3 ~/.kiro/skills/crew-setup/tools/crew-audit.py
-```
-Todo update muda alguma coisa que o `crew-check.sh` não enxerga (modelo removido do
-catálogo, chave de config com default novo, path de venv velho). A auditoria cobre isso:
+1. **Diagnóstico:** `bash tools/crew-check.sh`. Confere o ambiente contra o perfil e roda o
+   `check.py` de cada skill vinculada.
+2. **Plano:** `bash tools/crew-setup.sh --plan` mostra o que seria feito, sem alterar nada.
+3. **Setup:** `bash tools/crew-setup.sh`.
+4. **Auditoria (depois do restart):** `python3 tools/crew-audit.py`. Todo update muda algo
+   que o diagnóstico não enxerga:
 
 | Seção | O que procura |
 |---|---|
 | Log do gateway | erros/warnings desde o último start, agrupados e cruzados com o catálogo `KNOWN` |
 | Modelos | ids em `config.json` e `~/.kiro/agents/*.json` fora de `kiro-cli chat --list-models` |
-| Venv antigo | `crew-venv-<versão>` velho em systemd, ldconfig, `.bashrc`, config e agents |
+| Venv antigo | `crew-venv-<versão>` velho em systemd, ldconfig, `.bashrc`, config e agents; `LD_PRELOAD` legado |
 | Crash dumps | dumps com stack trace desde o start |
 | Drift de config | diff do `config.json` contra o snapshot anterior (`.data/config-baseline.json`) |
 
-**4. Fechar o ciclo (melhoria contínua da skill):**
-- Cada linha listada como "sem assinatura conhecida" que for recorrente vira uma entrada
-  nova em `KNOWN` no `crew-audit.py` (regex, nível, causa, correção).
-- Cada chave que o drift mostrar com valor trocado pelo update e que precisa ser
-  reaplicada vira um `_config_check` no `crew-check.sh` e, se for o caso, um ajuste no
-  passo 5/6 do `crew-setup.sh`.
-- Novo erro com correção conhecida entra também na tabela **Erros Comuns** abaixo.
-- Com o ambiente saudável, rodar a auditoria sem `--no-save` para gravar o snapshot que
-  o próximo update vai comparar.
+5. **Fechar o ciclo (melhoria contínua):**
+   - Linha "sem assinatura conhecida" que se repete vira entrada nova em `KNOWN` no `crew-audit.py`.
+   - Chave que o update trocou e precisa ser reaplicada vira `_config_check` no
+     `crew-check.sh` e, se for o caso, um ajuste no passo 5/7 do `crew-setup.sh`.
+   - Preferência pessoal (que não vale para todo mundo) vai no `.data/prefs.conf`, não no código.
+   - Correção nova entra na tabela **Erros Comuns**.
+   - Com o ambiente saudável, rodar a auditoria sem `--no-save` para gravar o snapshot.
 
-O agente **não** consegue alterar `~/.kiro/crew/config.json` (protegido). Correções de
-config saem como comando `kirocrew config set ...` para o usuário rodar, ou ajuste em
-Settings no dashboard.
+O agente **não** altera `~/.kiro/crew/config.json` (protegido). Correções de config saem
+como `kirocrew config set ...` para o usuário rodar, ou ajuste em Settings no dashboard.
 
-## O que o crew-setup.sh faz
+## Personalizar sem mexer no código
 
-| Passo | O que faz |
-|-------|-----------|
-| 1/6 | Instala pacotes extras do `extras.txt` (boto3, amazon-transcribe, edge-tts, httpx) |
-| 2/6 | Instala pywhispercpp com CUDA do wheel guardado; sem wheel, compila com `GGML_CUDA=1` (~10-15 min) e guarda |
-| 3/6 | Configura ldconfig para as libs CUDA do whisper, pelo caminho estável `crew-venv-current` |
-| 4/6 | **Configura LD_PRELOAD no systemd** (override.conf), pelo caminho estável — crítico para CUDA funcionar |
-| 5/6 | Aplica configurações de STT (provider, modelo, idioma), TTS (piper, voice_reply off) e modelos de LLM em `auto` (`agent.model`, `fallback_model`, `role_models.*`) |
-| 6/6 | Reinicia o Crew e confirma `using CUDA0 backend` no log |
+| Arquivo (em `.data/`, gitignored) | Para quê |
+|---|---|
+| `profile.env` | perfil da máquina (gerado pelo setup; pode editar à mão) |
+| `extras.txt` | pacotes extras seus para o venv, formato `requirements.txt`; o setup instala e o check confere |
+| `prefs.conf` | preferências pessoais conferidas pelo check, uma `chave=valor` por linha (ex.: `agent.reasoning_effort=max`) |
 
-## Detecção dinâmica do venv
+## Caminho estável e a libggml-cuda
 
-Os scripts detectam automaticamente o venv ativo:
-- Se `~/.kiro/crew-venv-current` (symlink) existir → usa ele
-- Senão → fallback para `~/.kiro/crew-venv` (legado)
+O Crew instala cada versão numa pasta nova (`<KIROCREW_HOME>-venv-<versão>`) e troca o alvo
+do link `<KIROCREW_HOME>-venv-current` a cada update. O setup grava **o link**, nunca a pasta
+com versão, no `/etc/ld.so.conf.d/kirocrew-whisper.conf`. Assim o arquivo não fica velho
+no update e não precisa de `sudo` de novo.
 
-Isso permite que a skill funcione em qualquer versão do Kiro Crew (0.9, 0.10, 0.11...).
+A `libggml.so` do pywhispercpp procura a `libggml-cuda` num diretório temporário do build,
+que some depois da instalação. Quem encontra a lib é o cache do ldconfig. Medido no
+0.11.1: sem `LD_PRELOAD`, só com o ldconfig, o whisper sobe com `using CUDA0 backend`.
 
-### Caminho estável nos arquivos de sistema
+O `LD_PRELOAD` no systemd (solução antiga) foi retirado: o gateway repassa o ambiente a
+todo processo filho (bash, git, node, MCPs), e cada um carregava a lib CUDA inteira
+(medido: ~56 ms e ~50 MB a mais por processo). Se o STT cair para CPU mesmo com o
+ldconfig certo, o plano B é `crew-setup.sh --ld-preload`.
 
-O Crew instala cada versão numa pasta nova (`crew-venv-<versão>`) e troca o alvo do link
-`~/.kiro/crew-venv-current` a cada update. O `crew-setup.sh` grava **o link, não o alvo
-resolvido**, no `override.conf` (`LD_PRELOAD`) e no `kirocrew-whisper.conf` (ldconfig).
-Assim esses arquivos não ficam velhos no update e não precisam de `sudo` de novo.
-O `crew-check.sh` e o `crew-audit.py` avisam quando um deles ainda usa caminho com versão.
-
-Não transformar `~/.kiro/crew-venv` (sem versão) em link: o Crew trata essa pasta como
+Não transformar `<KIROCREW_HOME>-venv` (sem versão) em link: o Crew trata essa pasta como
 fallback legado e não a renomeia, move ou converte.
 
-### Wheel do pywhispercpp guardado
+## Wheel do pywhispercpp guardado
 
 O venv novo vem sem extras por design, então o pywhispercpp precisa ser reinstalado a
-cada update. O passo 2/6 compila o wheel com CUDA **uma vez** e o guarda em
-`.data/wheels/<cpXY>-cuda<versão>/`. Nos updates seguintes reinstala dele em segundos.
-Recompila sozinho quando muda a versão do Python ou do CUDA; para forçar:
-`bash tools/crew-setup.sh --rebuild`.
+cada update. No perfil `gpu`, o passo 2/7 compila o wheel com CUDA **uma vez** e o guarda
+em `.data/wheels/<cpXY>-cuda<versão>/`. Nos updates seguintes reinstala dele em segundos.
+Recompila sozinho quando muda a versão do Python ou do CUDA; para forçar, `--rebuild`.
 
 ## Estrutura da skill
 
 ```
 crew-setup/
-├── SKILL.md              # este arquivo
+├── SKILL.md
+├── README.md
 └── tools/
-    ├── crew-check.sh     # diagnóstico de compatibilidade
-    ├── crew-setup.sh     # setup/restauração completo
-    ├── crew-audit.py     # auditoria pós-update (logs, modelos, paths, drift)
-    └── extras.txt        # lista de pacotes extras do venv
+    ├── lib.sh                      # caminhos, detecção do ambiente, perfil, skills vinculadas
+    ├── crew-check.sh               # diagnóstico conforme o perfil (só lê)
+    ├── crew-setup.sh               # setup/restauração em 7 passos
+    ├── crew-audit.py               # auditoria pós-update (logs, modelos, paths, drift)
+    ├── linked-skills.txt           # skills que o setup restaura
+    └── requirements-transcribe.txt # pacotes do perfil transcribe
 ```
 
-`.data/` (gitignored) guarda o snapshot de config da última auditoria e o wheel do pywhispercpp (`.data/wheels/`).
+`.data/` (gitignored) guarda o perfil, as personalizações, o snapshot da auditoria e o
+wheel do pywhispercpp.
 
-> **Nota sobre o padrão:** o padrão `create-skill` recomenda scripts em Python e um `check.py` com exit 0/1. Esta skill usa bash intencionalmente — os scripts interagem com `systemctl`, `ldconfig`, `nvidia-smi` e paths de sistema, que são ferramentas de sistema nativas do Linux e mais diretas em shell. O `crew-check.sh` cumpre o papel do `check.py` (diagnóstico com saída visual de ✓/✗), porém em bash. Skills de sistema com forte acoplamento ao SO são uma exceção justificada ao padrão Python.
-
-## Personalizar pacotes extras
-
-Edite `tools/extras.txt` para adicionar ou remover pacotes.
-O `crew-setup.sh` usa esse arquivo como fonte da verdade.
+> **Nota sobre o padrão:** a skill `create-skill` recomenda scripts em Python e um `check.py`. Esta skill usa bash porque lida direto com `systemctl`, `ldconfig`, `nvidia-smi` e paths de sistema. O `crew-check.sh` cumpre o papel do `check.py`. É uma exceção justificada para skill de sistema.
 
 ## Compatibilidade
 
 | Ambiente | Suporte |
 |----------|---------|
-| Linux (Ubuntu/Mint/Debian) + GPU NVIDIA | ✅ Completo |
-| Linux + GPU AMD (ROCm) | ⚠️ Parcial — trocar `GGML_CUDA=1` por `GGML_HIPBLAS=1` |
-| Linux sem GPU | ⚠️ Parcial — STT roda em CPU (mais lento) |
+| Linux (Ubuntu/Mint/Debian) + GPU NVIDIA | ✅ Completo (perfil `gpu`) |
+| Linux sem GPU | ✅ Perfil `cpu` (whisper na CPU, modelo `small`), `transcribe` ou `off` |
+| Linux + GPU AMD (ROCm) | ⚠️ Perfil `cpu`; build com ROCm não é automatizado |
 | macOS | ⚠️ Não suportado — `systemctl` e `ldconfig` não existem |
 | Windows | ⚠️ Não suportado — usar WSL2 |
 
@@ -160,56 +197,33 @@ O `crew-setup.sh` usa esse arquivo como fonte da verdade.
 
 | Sintoma | Causa provável | Correção |
 |---|---|---|
-| STT sumiu / não transcreve após update | o update recriou o venv e apagou os extras | rodar `crew-setup.sh` (passos 1-6) |
-| `ModuleNotFoundError: edge_tts` / `httpx` | pacote extra ausente no venv | `crew-setup.sh` passo 1/6, ou adicionar em `extras.txt` |
-| STT roda, mas na CPU (lento) | pywhispercpp sem CUDA | `crew-setup.sh` passo 2/6 (recompila com `GGML_CUDA=1`) |
-| `ldconfig -p \| grep whisper` vazio | libs CUDA do whisper não registradas | `crew-setup.sh` passo 3/6 |
-| **"no GPU found" com libs presentes** | **LD_PRELOAD faltando no systemd** | `crew-setup.sh` passo 4/6 |
-| Log não mostra `CUDA0 backend` após restart | build sem CUDA ou LD_PRELOAD ausente | refazer passos 2-4, depois conferir o `journalctl` |
-| Áudio indesejado no Telegram volta | `voice_reply.enabled` voltou a `true` no update | `crew-setup.sh` passo 5/6 (reaplica a config de TTS) |
-| Build do pywhispercpp falha | falta `build-essential`, `cmake` ou `nvidia-cuda-toolkit` | instalar os pacotes de sistema e rodar `crew-check.sh` antes |
-| Sub-agentes falham com `InvalidModelError: model '...' is not available` | o update tirou o modelo do catálogo e ele ficou fixo em `agent.role_models.*` | `kirocrew config set agent.role_models.subagent auto` (usuário roda); `crew-audit.py` lista todas as chaves afetadas |
-| `ERROR: ld.so: ... crew-venv-<antigo> ... cannot be preloaded` em todo comando | `LD_PRELOAD` velho no systemd e herdado pelo shell | `crew-setup.sh` passo 4/6; no terminal já aberto, `unset LD_PRELOAD` |
+| STT sumiu / não transcreve após update | o update recriou o venv e apagou o pywhispercpp | `crew-setup.sh` (passos 1-2) |
+| "perfil STT=gpu, mas não há GPU NVIDIA" | perfil não combina com a máquina | `crew-setup.sh --reconfigure` e escolher `cpu`, `transcribe` ou `off` |
+| "falta o CUDA toolkit (nvcc)" | `nvidia-cuda-toolkit` não instalado | `sudo apt install nvidia-cuda-toolkit`, ou perfil `cpu` |
+| STT roda, mas na CPU ("no GPU found") | build sem CUDA ou `kirocrew-whisper.conf` ausente | `crew-setup.sh` (passos 2-3); se persistir, `--ld-preload` |
+| `ldconfig -p \| grep ggml` vazio | libs do whisper não registradas | `crew-setup.sh` (passo 3) |
+| `ERROR: ld.so: ... cannot be preloaded` em todo comando | `LD_PRELOAD` legado apontando para venv antigo | `crew-setup.sh` (passo 4 remove); no terminal aberto, `unset LD_PRELOAD` |
+| TTS do dashboard com fonética de inglês | provider `piper` removido no 0.11; o fallback `system` sem voz definida | `crew-setup.sh` (passo 5: `system` + `voice_reply.system_voice`) |
+| `voice_reply.provider 'piper' was removed` no log | config antiga | idem acima |
+| Áudio indesejado no Telegram | `voice_reply.enabled` ou `telegram.voice_replies` = true | o `install.py` da voxlocal desliga os dois (passo 6) |
+| Skill vinculada "é cópia sem git" | instalada com `cp -r` | `git clone <url> ~/.kiro/skills/<pasta>` e mover a cópia para backup |
+| Sub-agentes falham com `InvalidModelError` | modelo fixo saiu do catálogo | `crew-setup.sh` (passo 5 põe `auto`); `crew-audit.py` lista as chaves |
+| Build do pywhispercpp falha | falta `build-essential`, `cmake` ou `git` | instalar e rodar `crew-check.sh` antes |
 | `whisper_full_with_state: failed to decode` isolado | áudio curto ou silencioso | nenhuma; só investigar se repetir |
-| `sudo: .../crew-audit.py: comando não encontrado` ou "Não rode com sudo" | script chamado com `sudo` | rodar como o próprio usuário (`python3 .../crew-audit.py`, `bash .../crew-setup.sh`); o setup pede a senha sozinho nos passos 3, 4 e 6 |
-
-## O gotcha do LD_PRELOAD
-
-O `_pywhispercpp.so` **não força `RTLD_GLOBAL`** na `libggml-cuda` ao ser importado pelo Python.
-Resultado: o ggml tenta descobrir o backend CUDA em runtime e falha ("no GPU found"), mesmo
-com as libs compiladas corretamente e o ldconfig configurado.
-
-**Solução:** forçar o preload da lib CUDA via variável de ambiente no systemd:
-
-```bash
-# override.conf em /etc/systemd/system/kirocrew.service.d/
-[Service]
-Environment="LD_PRELOAD=/caminho/do/venv/lib/python3.12/site-packages/libggml-cuda.so.0"
-```
-
-O `crew-setup.sh` configura isso automaticamente no passo 4/6.
+| "Não rode com sudo" | script chamado com `sudo` | rodar como o próprio usuário; o setup pede a senha sozinho |
 
 ## Verificação manual
 
 ```bash
-# Confirmar CUDA no STT após restart
-journalctl -u kirocrew.service -n 50 --no-pager | grep -iE 'CUDA0|backend_init'
+# STT na GPU no start atual
+journalctl -u kirocrew.service --since "$(systemctl show kirocrew.service -p ActiveEnterTimestamp --value)" --no-pager | grep -E 'CUDA0|no GPU'
 
-# Confirmar LD_PRELOAD no systemd
-cat /etc/systemd/system/kirocrew.service.d/override.conf
+# Libs do whisper no cache do ldconfig
+ldconfig -p | grep ggml
 
-# Confirmar libs registradas
-ldconfig -p | grep whisper
+# Perfil salvo
+cat ~/.kiro/skills/crew-setup/.data/profile.env
 
-# Confirmar pacotes no venv
-~/.kiro/crew-venv-current/bin/pip list | grep -Ei "boto3|amazon|pywhisper|edge-tts|httpx"
-
-# Ver qual venv está ativo
+# Venv ativo
 readlink -f ~/.kiro/crew-venv-current
 ```
-
-## Relacionados
-
-- Runbook `cuda-stt-gpu.md` — detalhes técnicos do gotcha CUDA/LD_PRELOAD
-- Runbook `voz-config.md` — configuração geral de voz (TTS/STT)
-- Steering `me-voice.md` — regras de comportamento do agente com voz

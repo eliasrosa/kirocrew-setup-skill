@@ -1,0 +1,4 @@
+# STT na nuvem (Amazon Transcribe): instalado só no perfil STT=transcribe.
+# Mesmas versões do extra oficial kirocrew[voice-aws] (ver o METADATA do kirocrew).
+boto3>=1.34,<2
+amazon-transcribe>=0.6.3,<1
