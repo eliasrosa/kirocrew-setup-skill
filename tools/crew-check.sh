@@ -243,6 +243,16 @@ _config_check() {
   local key="$1" expected="$2" desc="$3"
   local actual
   actual=$(kirocrew config get "$key" 2>/dev/null | tr -d '"' | xargs)
+  # `config get` não resolve chaves de mapas livres (ex.: agent.role_models.subagent
+  # dá "Unknown key"), mas o `set` grava. Fallback: ler direto do config.json.
+  if [ -z "$actual" ] && [ -x "$VENV_PYTHON" ]; then
+    actual=$("$VENV_PYTHON" -c '
+import json, sys
+v = json.load(open(sys.argv[1]))
+for p in sys.argv[2].split("."):
+    v = v.get(p) if isinstance(v, dict) else None
+print("" if v is None else v)' "$CREW_HOME/config.json" "$key" 2>/dev/null)
+  fi
   if [ "$actual" = "$expected" ]; then
     ok "$key = $expected — $desc"
   else
@@ -257,6 +267,10 @@ _config_check "stt.model"         "large-v3-turbo"  "Melhor modelo de STT"
 _config_check "stt.language_code" "pt-BR"           "Idioma do STT"
 _config_check "stt.polish"        "True"            "Pós-processamento da transcrição"
 _config_check "voice_reply.enabled" "False"         "Desativa envio automático de áudio no Telegram"
+_config_check "agent.model"            "auto"       "Modelo principal automático (id fixo quebra quando sai do catálogo)"
+_config_check "agent.fallback_model"   "auto"       "Modelo de fallback automático"
+_config_check "agent.role_models.subagent"   "auto" "Modelo dos sub-agentes automático"
+_config_check "agent.role_models.background" "auto" "Modelo de tarefas em background automático"
 _config_check "agent.reasoning_effort" "max"        "Máxima qualidade de raciocínio"
 _config_check "agent.approval_mode"    "auto"       "Auto-aprovação de ferramentas"
 _config_check "agent.tool_search"      "True"       "Busca de ferramentas sob demanda"
@@ -298,5 +312,7 @@ fi
 echo ""
 echo "  Próximo passo:"
 echo "  bash ~/.kiro/skills/crew-setup/tools/crew-setup.sh"
+echo "  Depois do restart, auditar logs/modelos/drift:"
+echo "  python3 ~/.kiro/skills/crew-setup/tools/crew-audit.py"
 echo "════════════════════════════════════════════════"
 echo ""

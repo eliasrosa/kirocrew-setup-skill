@@ -39,9 +39,25 @@ O que o setup faz:
 | 1/6 | Instala pacotes extras (boto3, amazon-transcribe, edge-tts, httpx) |
 | 2/6 | Recompila pywhispercpp com CUDA (`GGML_CUDA=1`, ~10-15 min) |
 | 3/6 | Configura ldconfig para libs CUDA do whisper |
-| 4/6 | Aplica configurações de STT e TTS no gateway |
-| 5/6 | Adota config defaults atualizados do Crew |
+| 4/6 | Configura `LD_PRELOAD` no systemd (override.conf), crítico para o CUDA |
+| 5/6 | Aplica configurações de STT e TTS e põe os modelos de LLM em `auto` |
 | 6/6 | Reinicia o Crew e confirma STT na GPU |
+
+**3. Auditar o que o update quebrou ou mudou (depois do restart):**
+```bash
+python3 ~/.kiro/skills/crew-setup/tools/crew-audit.py
+```
+
+Olha o que o diagnóstico de ambiente não vê:
+- Erros e warnings no log do gateway desde o último start, agrupados e cruzados com um catálogo de causas conhecidas
+- Modelos configurados (`config.json` e `~/.kiro/agents/*.json`) que saíram do catálogo do `kiro-cli`
+- Paths de venv antigo (`crew-venv-<versão>`) que sobraram em systemd, ldconfig, shell e config
+- Crash dumps com stack trace
+- Drift de config: compara o `config.json` com o snapshot da auditoria anterior (`.data/config-baseline.json`, fora do git, segredos mascarados)
+
+Rode uma vez com o ambiente saudável para gravar o snapshot. No próximo update, a auditoria mostra exatamente quais chaves mudaram. `--no-save` audita sem atualizar o snapshot; `--since "2 hours ago"` muda a janela do log. Exit 1 quando há problema bloqueante.
+
+O script só reporta. O `config.json` do Crew é protegido contra escrita do agente, então as correções de config ficam como comando para o usuário rodar.
 
 ## Quando usar
 
@@ -81,8 +97,11 @@ crew-setup/
 └── tools/
     ├── crew-check.sh     # diagnóstico de compatibilidade
     ├── crew-setup.sh     # setup/restauração completo
+    ├── crew-audit.py     # auditoria pós-update (logs, modelos, paths, drift)
     └── extras.txt        # lista de pacotes extras do venv
 ```
+
+`.data/` (gitignored) guarda o snapshot local da auditoria.
 
 ## Requisitos
 

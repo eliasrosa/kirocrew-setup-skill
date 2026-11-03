@@ -153,6 +153,17 @@ else
   fail "Erro ao configurar TTS"
 fi
 
+# Modelos: 'auto' em todas as chaves. Id fixo quebra quando o update tira o
+# modelo do catálogo (ex.: claude-sonnet-4.6 derrubou todos os sub-agentes).
+if $KIROCREW config set agent.model auto 2>/dev/null && \
+   $KIROCREW config set agent.fallback_model auto 2>/dev/null && \
+   $KIROCREW config set agent.role_models.subagent auto 2>/dev/null && \
+   $KIROCREW config set agent.role_models.background auto 2>/dev/null; then
+  ok "Modelos: agent.model, fallback_model e role_models.* = auto"
+else
+  fail "Erro ao configurar modelos para auto"
+fi
+
 # ── 6. Restart + verificação ──────────────────────────────────────────────────
 echo "▸ [6/6] Reiniciando Kiro Crew e verificando STT na GPU..."
 sudo systemctl restart kirocrew.service
