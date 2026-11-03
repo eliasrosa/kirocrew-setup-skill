@@ -14,6 +14,8 @@ A skill é carregada automaticamente pelo Kiro Crew na próxima sessão.
 
 ## Uso
 
+Nenhum script roda com `sudo`. O `crew-setup.sh` pede a senha sozinho nos passos que mexem no sistema (3, 4 e 6).
+
 **1. Diagnosticar o ambiente:**
 ```bash
 bash ~/.kiro/skills/crew-setup/tools/crew-check.sh
@@ -37,9 +39,11 @@ O que o setup faz:
 | Passo | Ação |
 |-------|------|
 | 1/6 | Instala pacotes extras (boto3, amazon-transcribe, edge-tts, httpx) |
-| 2/6 | Recompila pywhispercpp com CUDA (`GGML_CUDA=1`, ~10-15 min) |
-| 3/6 | Configura ldconfig para libs CUDA do whisper |
-| 4/6 | Configura `LD_PRELOAD` no systemd (override.conf), crítico para o CUDA |
+| 2/6 | Instala pywhispercpp com CUDA do wheel guardado; na primeira vez compila (`GGML_CUDA=1`, ~10-15 min) e guarda em `.data/wheels/` |
+| 3/6 | Configura ldconfig para libs CUDA do whisper, pelo caminho estável `~/.kiro/crew-venv-current` |
+| 4/6 | Configura `LD_PRELOAD` no systemd (override.conf) pelo caminho estável, crítico para o CUDA |
+
+Os arquivos de sistema recebem o link `crew-venv-current`, não a pasta com versão. Por isso o update do Crew não deixa esses caminhos velhos. `--rebuild` força recompilar o pywhispercpp (o wheel é recompilado sozinho se mudar a versão do Python ou do CUDA).
 | 5/6 | Aplica configurações de STT e TTS e põe os modelos de LLM em `auto` |
 | 6/6 | Reinicia o Crew e confirma STT na GPU |
 
@@ -101,7 +105,7 @@ crew-setup/
     └── extras.txt        # lista de pacotes extras do venv
 ```
 
-`.data/` (gitignored) guarda o snapshot local da auditoria.
+`.data/` (gitignored) guarda o snapshot local da auditoria e o wheel compilado do pywhispercpp.
 
 ## Requisitos
 

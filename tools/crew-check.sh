@@ -5,6 +5,13 @@
 #
 # Uso: bash ~/.kiro/skills/crew-setup/tools/crew-check.sh
 
+# Não rodar via sudo: o diagnóstico só lê, e como root o HOME vira /root.
+if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+  echo "❌ Não rode com sudo. O diagnóstico só lê; rode como o seu usuário:"
+  echo "   bash $0"
+  exit 1
+fi
+
 # Detectar venv ativo via symlink (padrão pós-0.10.0)
 if [ -L "$HOME/.kiro/crew-venv-current" ]; then
   CREW_VENV=$(readlink -f "$HOME/.kiro/crew-venv-current")
@@ -197,7 +204,11 @@ if [ -f "$OVERRIDE_FILE" ]; then
       ok "LD_PRELOAD configurado: $PRELOAD_PATH"
     else
       warn "LD_PRELOAD configurado mas arquivo não existe: $PRELOAD_PATH"
-      suggest "Atualizar o path no override: $SITE_PKGS/libggml-cuda.so.0"
+      suggest "Rodar crew-setup.sh (passo 4/6) para reconfigurar o LD_PRELOAD"
+    fi
+    if echo "$PRELOAD_PATH" | grep -qE 'crew-venv-[0-9]'; then
+      warn "LD_PRELOAD usa caminho com versão — fica velho no próximo update"
+      suggest "Rodar crew-setup.sh: grava pelo caminho estável ~/.kiro/crew-venv-current"
     fi
   else
     warn "override.conf existe mas sem LD_PRELOAD"
@@ -205,10 +216,21 @@ if [ -f "$OVERRIDE_FILE" ]; then
   fi
 else
   warn "LD_PRELOAD não configurado no systemd — STT pode cair em CPU"
-  suggest "Rodar crew-setup.sh ou configurar manualmente:"
-  suggest "sudo mkdir -p /etc/systemd/system/kirocrew.service.d"
-  suggest "echo '[Service]' | sudo tee $OVERRIDE_FILE"
-  suggest "echo 'Environment=\"LD_PRELOAD=$SITE_PKGS/libggml-cuda.so.0\"' | sudo tee -a $OVERRIDE_FILE"
+  suggest "Rodar crew-setup.sh (passo 4/6) para configurar o LD_PRELOAD"
+fi
+
+LDCONF="/etc/ld.so.conf.d/kirocrew-whisper.conf"
+if [ -f "$LDCONF" ] && grep -qE 'crew-venv-[0-9]' "$LDCONF"; then
+  warn "$LDCONF usa caminho com versão — fica velho no próximo update"
+  suggest "Rodar crew-setup.sh: grava pelo caminho estável ~/.kiro/crew-venv-current"
+fi
+
+# Wheel do pywhispercpp guardado (reinstala em segundos após update)
+SKILL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if ls "$SKILL_ROOT"/.data/wheels/*/pywhispercpp-*.whl &>/dev/null; then
+  ok "Wheel do pywhispercpp com CUDA guardado em .data/wheels/"
+else
+  info "Sem wheel guardado — a próxima execução do crew-setup.sh compila (~10-15 min) e guarda"
 fi
 
 # ── 7. Modelos ─────────────────────────────────────────────────────────────────

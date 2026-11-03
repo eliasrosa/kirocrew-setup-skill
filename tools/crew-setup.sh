@@ -8,19 +8,37 @@
 
 set -euo pipefail
 
+# Não rodar via sudo: o script pede a senha só nos passos 3, 4 e 6. Como root, o pip
+# e o `kirocrew config set` gravariam com dono root e no HOME errado (/root).
+if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+  echo "❌ Não rode com sudo. O script pede a senha só nos passos 3, 4 e 6:"
+  echo "   bash $0"
+  exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Detectar venv ativo via symlink (padrão pós-0.10.0)
+REBUILD=0
+[ "${1:-}" = "--rebuild" ] && REBUILD=1
+
+# Detectar venv ativo via symlink (padrão pós-0.10.0).
+# STABLE_VENV é o caminho que acompanha todo update (o Crew troca o alvo do link
+# a cada versão): é ele que vai nos arquivos de sistema. CREW_VENV é o alvo
+# resolvido, usado só para instalar pacotes nesta execução.
 if [ -L "$HOME/.kiro/crew-venv-current" ]; then
-  CREW_VENV=$(readlink -f "$HOME/.kiro/crew-venv-current")
+  STABLE_VENV="$HOME/.kiro/crew-venv-current"
+  CREW_VENV=$(readlink -f "$STABLE_VENV")
 else
   # Fallback para venv legado (pré-0.10.0)
-  CREW_VENV="$HOME/.kiro/crew-venv"
+  STABLE_VENV="$HOME/.kiro/crew-venv"
+  CREW_VENV="$STABLE_VENV"
 fi
 
 VENV_PIP="$CREW_VENV/bin/pip"
 VENV_PYTHON="$CREW_VENV/bin/python3"
 REQS="$SCRIPT_DIR/extras.txt"
+WHEELS_ROOT="$SCRIPT_DIR/../.data/wheels"
+PYWHISPER_SRC="git+https://github.com/absadiki/pywhispercpp"
 LDCONF="/etc/ld.so.conf.d/kirocrew-whisper.conf"
 OVERRIDE_FILE="/etc/systemd/system/kirocrew.service.d/override.conf"
 KIROCREW="kirocrew"
@@ -35,6 +53,8 @@ else
   echo "❌ Python do venv não encontrado: $VENV_PYTHON"
   exit 1
 fi
+# Mesmo site-packages, escrito pelo caminho estável (ex.: crew-venv-current/lib/python3.12/site-packages)
+STABLE_SITE="$STABLE_VENV/${SITE_PKGS#"$CREW_VENV"/}"
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 ok()   { echo "  ✅  $*"; }
@@ -63,12 +83,29 @@ else
 fi
 
 # ── 2. pywhispercpp com CUDA ──────────────────────────────────────────────────
-echo "▸ [2/6] Compilando pywhispercpp com CUDA (~10-15 min)..."
-if GGML_CUDA=1 "$VENV_PIP" install --force-reinstall \
-     git+https://github.com/absadiki/pywhispercpp 2>&1 | tail -3; then
-  ok "pywhispercpp compilado com CUDA"
+# O wheel compilado fica em .data/wheels/<python>-<cuda>/. Nos updates seguintes
+# reinstala dele em segundos; só recompila se mudar Python/CUDA ou com --rebuild.
+PY_TAG=$("$VENV_PYTHON" -c 'import sys; print(f"cp{sys.version_info[0]}{sys.version_info[1]}")')
+CUDA_TAG=$(nvcc --version 2>/dev/null | grep -oP 'release \K[\d.]+' || echo "nocuda")
+WHEEL_DIR="$WHEELS_ROOT/$PY_TAG-cuda$CUDA_TAG"
+CACHED_WHEEL=$(ls -1t "$WHEEL_DIR"/pywhispercpp-*.whl 2>/dev/null | head -1 || true)
+
+if [ -n "$CACHED_WHEEL" ] && [ "$REBUILD" -eq 0 ]; then
+  echo "▸ [2/6] pywhispercpp com CUDA a partir do wheel guardado..."
+  info "Wheel: $CACHED_WHEEL"
 else
-  fail "Erro na compilação do pywhispercpp com CUDA"
+  echo "▸ [2/6] Compilando pywhispercpp com CUDA (~10-15 min)..."
+  mkdir -p "$WHEEL_DIR"
+  if GGML_CUDA=1 "$VENV_PIP" wheel --no-deps -w "$WHEEL_DIR" "$PYWHISPER_SRC" 2>&1 | tail -3; then
+    CACHED_WHEEL=$(ls -1t "$WHEEL_DIR"/pywhispercpp-*.whl 2>/dev/null | head -1 || true)
+  fi
+  [ -n "$CACHED_WHEEL" ] && ok "Wheel compilado e guardado: $CACHED_WHEEL"
+fi
+
+if [ -n "$CACHED_WHEEL" ] && "$VENV_PIP" install --quiet --force-reinstall "$CACHED_WHEEL" 2>&1 | tail -3; then
+  ok "pywhispercpp com CUDA instalado"
+else
+  fail "Erro ao compilar/instalar o pywhispercpp com CUDA (rode de novo com --rebuild)"
 fi
 
 # Verificar se libggml-cuda foi gerada
@@ -81,11 +118,11 @@ fi
 
 # ── 3. ldconfig para libs CUDA do whisper ────────────────────────────────────
 echo "▸ [3/6] Configurando ldconfig..."
-if [ ! -f "$LDCONF" ] || ! grep -q "$SITE_PKGS" "$LDCONF" 2>/dev/null; then
-  echo "$SITE_PKGS" | sudo tee "$LDCONF" > /dev/null
-  info "Criado/atualizado $LDCONF"
+if [ "$(cat "$LDCONF" 2>/dev/null)" != "$STABLE_SITE" ]; then
+  echo "$STABLE_SITE" | sudo tee "$LDCONF" > /dev/null
+  info "Criado/atualizado $LDCONF → $STABLE_SITE"
 else
-  info "$LDCONF já aponta para $SITE_PKGS"
+  info "$LDCONF já aponta para $STABLE_SITE"
 fi
 
 if sudo ldconfig 2>&1 | grep -v "não é um link simbólico" | grep -q "error"; then
@@ -104,9 +141,10 @@ fi
 
 # ── 4. LD_PRELOAD no systemd (crítico para CUDA) ─────────────────────────────
 echo "▸ [4/6] Configurando LD_PRELOAD no systemd..."
-CUDA_LIB="$SITE_PKGS/libggml-cuda.so.0"
+# Grava o caminho estável: o override não precisa mais ser editado a cada update.
+CUDA_LIB="$STABLE_SITE/libggml-cuda.so.0"
 
-if [ ! -f "$CUDA_LIB" ]; then
+if [ ! -f "$SITE_PKGS/libggml-cuda.so.0" ]; then
   fail "libggml-cuda.so.0 não encontrada — não é possível configurar LD_PRELOAD"
 else
   sudo mkdir -p /etc/systemd/system/kirocrew.service.d
