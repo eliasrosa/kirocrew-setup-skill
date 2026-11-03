@@ -1,8 +1,12 @@
 # kirocrew-setup-skill
 
-Skill para diagnóstico e restauração do ambiente [Kiro Crew](https://kiro.dev) após updates, ou para configurar o Crew em uma máquina nova.
+Skill para configurar o [Kiro Crew](https://kiro.dev) numa máquina Linux e restaurar o ambiente depois de cada update.
 
-Verifica compatibilidade, reinstala pacotes extras, recompila STT com CUDA e aplica configurações recomendadas — tudo com checklist visual.
+O update do Kiro Crew cria um venv novo e apaga o que foi instalado à parte: o STT local
+(whisper), os pacotes de voz e as dependências de outras skills. Esta skill detecta o
+ambiente, pergunta o perfil da máquina uma vez e, a cada update, restaura tudo em poucos
+minutos. Depois do restart, uma auditoria revisa o log do gateway, os modelos e o que
+mudou na config.
 
 ## Instalação
 
@@ -10,44 +14,70 @@ Verifica compatibilidade, reinstala pacotes extras, recompila STT com CUDA e apl
 git clone https://github.com/eliasrosa/kirocrew-setup-skill ~/.kiro/skills/crew-setup
 ```
 
-A skill é carregada automaticamente pelo Kiro Crew na próxima sessão.
+O Kiro Crew carrega as skills de `~/.kiro/skills/` sozinho, na próxima sessão.
 
-## Uso
+## Requisitos
 
-Nenhum script roda com `sudo`. O `crew-setup.sh` pede a senha sozinho nos passos que mexem no sistema (3, 4 e 6).
+| Item | Quando | Como instalar |
+|---|---|---|
+| Kiro Crew rodando via systemd (`kirocrew.service`) | sempre | instalador oficial |
+| Linux com `systemctl` | sempre | — |
+| `git` | sempre | `sudo apt install git` |
+| `ffmpeg` | STT local (`gpu`/`cpu`) | `sudo apt install ffmpeg` |
+| GPU NVIDIA + driver + `nvidia-cuda-toolkit` | perfil `gpu` | `sudo apt install nvidia-cuda-toolkit` |
+| `build-essential`, `cmake` | perfil `gpu`, na primeira compilação | `sudo apt install build-essential cmake` |
+| `espeak-ng` | TTS nativo do dashboard | `sudo apt install espeak-ng` |
 
-**1. Diagnosticar o ambiente:**
+O diagnóstico confere só o que o seu perfil precisa:
+
 ```bash
 bash ~/.kiro/skills/crew-setup/tools/crew-check.sh
 ```
 
-Verifica e orienta sobre:
-- Sistema operacional (Linux ✅ / macOS ⚠️ / Windows ⚠️)
-- GPU (NVIDIA CUDA / AMD ROCm / sem GPU)
-- Dependências do sistema (ffmpeg, cmake, gcc, build-essential...)
-- CLIs recomendados (gh, jq, docker, kubectl, aws, az...)
-- Pacotes extras no venv do Crew
-- Modelos STT (Whisper) e TTS (Piper)
-- Configurações recomendadas do gateway
+## Uso
 
-**2. Restaurar/configurar:**
+Nenhum script roda com `sudo`. O `crew-setup.sh` pede a senha sozinho nos passos que mexem no sistema.
+
+**1. Ver o plano (não altera nada):**
+
+```bash
+bash ~/.kiro/skills/crew-setup/tools/crew-setup.sh --plan
+```
+
+**2. Configurar / restaurar:**
+
 ```bash
 bash ~/.kiro/skills/crew-setup/tools/crew-setup.sh
 ```
 
-O que o setup faz:
-| Passo | Ação |
-|-------|------|
-| 1/6 | Instala pacotes extras (boto3, amazon-transcribe, edge-tts, httpx) |
-| 2/6 | Instala pywhispercpp com CUDA do wheel guardado; na primeira vez compila (`GGML_CUDA=1`, ~10-15 min) e guarda em `.data/wheels/` |
-| 3/6 | Configura ldconfig para libs CUDA do whisper, pelo caminho estável `~/.kiro/crew-venv-current` |
-| 4/6 | Configura `LD_PRELOAD` no systemd (override.conf) pelo caminho estável, crítico para o CUDA |
+Na primeira vez ele mostra o que detectou (GPU, CUDA, espeak-ng) e pergunta o perfil:
 
-Os arquivos de sistema recebem o link `crew-venv-current`, não a pasta com versão. Por isso o update do Crew não deixa esses caminhos velhos. `--rebuild` força recompilar o pywhispercpp (o wheel é recompilado sozinho se mudar a versão do Python ou do CUDA).
-| 5/6 | Aplica configurações de STT e TTS e põe os modelos de LLM em `auto` |
-| 6/6 | Reinicia o Crew e confirma STT na GPU |
+| Pergunta | Opções |
+|---|---|
+| Transcrição (STT) | `gpu` (whisper na GPU NVIDIA), `cpu` (whisper na CPU), `transcribe` (Amazon Transcribe), `off` |
+| Modelo do whisper | `large-v3-turbo` (padrão na GPU), `medium`, `small` (padrão na CPU), `base` |
+| Idioma do STT | padrão: o do locale do sistema |
+| Voz do TTS nativo | voz do espeak-ng, ex.: `pt-br` |
+| Skills vinculadas | S/n para cada skill da lista |
+
+A resposta fica em `.data/profile.env`. Nos próximos updates o setup reusa o perfil sem
+perguntar. Para mudar: `--reconfigure`. Para automação sem perguntas: `--yes`.
+
+| Passo | Ação |
+|---|---|
+| 1/7 | Pacotes extras (Amazon Transcribe, se for o perfil, e os seus em `.data/extras.txt`) |
+| 2/7 | pywhispercpp: na GPU, do wheel com CUDA guardado (compila na 1ª vez, ~10-15 min); na CPU, do PyPI |
+| 3/7 | ldconfig para as libs do whisper, pelo caminho estável `~/.kiro/crew-venv-current` |
+| 4/7 | Remove o `LD_PRELOAD` legado do systemd |
+| 5/7 | Config do gateway: STT do perfil, TTS nativo (`system` + voz), modelos de LLM em `auto` |
+| 6/7 | Skills vinculadas: clona se faltar, roda o `install.py` e o `check.py` de cada uma |
+| 7/7 | Reinicia o Kiro Crew e confirma o STT na GPU |
+
+Antes de mexer em qualquer coisa, o setup valida o perfil contra a máquina: perfil `gpu`
+sem GPU NVIDIA ou sem CUDA toolkit para com a correção, em vez de compilar e falhar.
 
 **3. Auditar o que o update quebrou ou mudou (depois do restart):**
+
 ```bash
 python3 ~/.kiro/skills/crew-setup/tools/crew-audit.py
 ```
@@ -55,41 +85,51 @@ python3 ~/.kiro/skills/crew-setup/tools/crew-audit.py
 Olha o que o diagnóstico de ambiente não vê:
 - Erros e warnings no log do gateway desde o último start, agrupados e cruzados com um catálogo de causas conhecidas
 - Modelos configurados (`config.json` e `~/.kiro/agents/*.json`) que saíram do catálogo do `kiro-cli`
-- Paths de venv antigo (`crew-venv-<versão>`) que sobraram em systemd, ldconfig, shell e config
+- Paths de venv antigo (`crew-venv-<versão>`) que sobraram em systemd, ldconfig, shell e config, e `LD_PRELOAD` legado
 - Crash dumps com stack trace
 - Drift de config: compara o `config.json` com o snapshot da auditoria anterior (`.data/config-baseline.json`, fora do git, segredos mascarados)
 
 Rode uma vez com o ambiente saudável para gravar o snapshot. No próximo update, a auditoria mostra exatamente quais chaves mudaram. `--no-save` audita sem atualizar o snapshot; `--since "2 hours ago"` muda a janela do log. Exit 1 quando há problema bloqueante.
 
-O script só reporta. O `config.json` do Crew é protegido contra escrita do agente, então as correções de config ficam como comando para o usuário rodar.
+Os scripts só alteram a config do Crew com `kirocrew config set`. O agente do Crew não consegue alterar o `config.json` (é protegido), então as correções de config que ele propõe ficam como comando para você rodar.
+
+## Skills vinculadas
+
+`tools/linked-skills.txt` lista as skills que o setup instala e restaura:
+
+| Skill | Para quê |
+|---|---|
+| [voxlocal](https://github.com/eliasrosa/voxlocal-skill) | áudio (TTS pt-BR) como voice message no Telegram |
+| [browser-automation](https://github.com/eliasrosa/browser-automation-skill) | dirigir o Chrome logado do usuário via CDP (playwright-cli) |
+
+Cada skill mantém as próprias dependências (`tools/install.py`) e o próprio pré-check
+(`tools/check.py`); o setup só os chama. Para vincular outra skill, ela precisa seguir a
+mesma convenção (descrita na [create-skill](https://github.com/eliasrosa/create-skill)) e
+ganhar uma linha `<pasta> <url-do-repo>` no `linked-skills.txt`.
+
+## Personalizar sem mexer no código
+
+| Arquivo (em `.data/`, fora do git) | Para quê |
+|---|---|
+| `profile.env` | perfil da máquina (gerado pelo setup; pode editar à mão) |
+| `extras.txt` | pacotes extras seus para o venv, no formato `requirements.txt` |
+| `prefs.conf` | preferências pessoais que o check confere, uma `chave=valor` por linha (ex.: `agent.reasoning_effort=max`) |
 
 ## Quando usar
 
-- Após `kirocrew update` — o update recria o venv e apaga pacotes extras
-- STT parou de funcionar ou não usa GPU
-- `ModuleNotFoundError: edge_tts` ou `httpx`
-- Configurando o Crew em uma máquina nova
-
-## Personalizar pacotes extras
-
-Edite `tools/extras.txt` para adicionar ou remover pacotes do venv:
-
-```
-boto3>=1.34,<2
-amazon-transcribe>=0.6,<1
-edge-tts>=7.0
-httpx>=0.27
-```
-
-O `crew-setup.sh` usa esse arquivo como fonte da verdade (exceto `pywhispercpp`, que é sempre recompilado com CUDA separadamente).
+- Após `kirocrew update`: o update recria o venv e apaga os pacotes extras
+- STT parou de funcionar ou não usa a GPU
+- TTS do dashboard com sotaque errado depois do update
+- `ModuleNotFoundError` de pacote de voz ou de skill vinculada
+- Configurando o Crew numa máquina nova, com ou sem GPU
 
 ## Compatibilidade
 
 | Ambiente | Suporte |
 |----------|---------|
-| Linux + GPU NVIDIA | ✅ Completo |
-| Linux + GPU AMD (ROCm) | ⚠️ Trocar `GGML_CUDA=1` por `GGML_HIPBLAS=1` no crew-setup.sh |
-| Linux sem GPU | ⚠️ STT roda em CPU — considere modelo `small` em vez de `large-v3-turbo` |
+| Linux + GPU NVIDIA | ✅ Completo (perfil `gpu`) |
+| Linux sem GPU | ✅ Perfis `cpu`, `transcribe` ou `off` |
+| Linux + GPU AMD (ROCm) | ⚠️ Perfil `cpu`; build com ROCm não é automatizado |
 | macOS | ⚠️ `systemctl` e `ldconfig` não existem — adaptações necessárias |
 | Windows | ⚠️ Usar WSL2 (Ubuntu/Debian) |
 
@@ -97,20 +137,15 @@ O `crew-setup.sh` usa esse arquivo como fonte da verdade (exceto `pywhispercpp`,
 
 ```
 crew-setup/
-├── SKILL.md              # instruções para o agente Kiro Crew
+├── SKILL.md                        # instruções para o agente do Kiro Crew
+├── README.md
 └── tools/
-    ├── crew-check.sh     # diagnóstico de compatibilidade
-    ├── crew-setup.sh     # setup/restauração completo
-    ├── crew-audit.py     # auditoria pós-update (logs, modelos, paths, drift)
-    └── extras.txt        # lista de pacotes extras do venv
+    ├── lib.sh                      # caminhos, detecção do ambiente, perfil, skills vinculadas
+    ├── crew-check.sh               # diagnóstico conforme o perfil (só lê)
+    ├── crew-setup.sh               # setup/restauração em 7 passos
+    ├── crew-audit.py               # auditoria pós-update (logs, modelos, paths, drift)
+    ├── linked-skills.txt           # skills que o setup restaura
+    └── requirements-transcribe.txt # pacotes do perfil transcribe
 ```
 
-`.data/` (gitignored) guarda o snapshot local da auditoria e o wheel compilado do pywhispercpp.
-
-## Requisitos
-
-- [Kiro Crew](https://kiro.dev) instalado e rodando via systemd
-- Linux com systemd
-- GPU NVIDIA com driver instalado (para STT em GPU)
-- `nvidia-cuda-toolkit` (`sudo apt install nvidia-cuda-toolkit`)
-- `build-essential cmake` (`sudo apt install build-essential cmake`)
+`.data/` (fora do git) guarda o perfil, as personalizações, o snapshot da auditoria e o wheel compilado do pywhispercpp.

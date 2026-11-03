@@ -1,0 +1,7 @@
+# Skills vinculadas ao crew-setup.
+# Para cada skill escolhida no perfil, o crew-setup.sh roda o tools/install.py dela
+# (restaura o que o update do Kiro Crew apaga) e o crew-check.sh roda o tools/check.py.
+# Lista fechada de propósito: o setup só executa código das skills listadas aqui.
+# Formato: <pasta-da-skill> <url-do-repo>   (a pasta fica em ~/.kiro/skills/)
+voxlocal            https://github.com/eliasrosa/voxlocal-skill
+browser-automation  https://github.com/eliasrosa/browser-automation-skill
