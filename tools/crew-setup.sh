@@ -164,8 +164,19 @@ step_stt_gpu() {
     fi
     if [ -n "$CACHED_WHEEL" ]; then ok "Wheel compilado e guardado: $CACHED_WHEEL"; fi
   fi
-  if [ "$PLAN" -eq 1 ]; then plan "pip install --force-reinstall $CACHED_WHEEL"; return 0; fi
-  if [ -n "$CACHED_WHEEL" ] && "$VENV_PIP" install --quiet --force-reinstall "$CACHED_WHEEL" 2>&1 | tail -3; then
+  local wver have
+  wver="$(basename "${CACHED_WHEEL:-x-none}" | cut -d- -f2)"
+  have="$("$VENV_PIP" show pywhispercpp 2>/dev/null | awk '/^Version:/{print $2}' || true)"
+  if [ "$REBUILD" -eq 0 ] && [ "$have" = "$wver" ] && [ -f "$SITE_PKGS/libggml-cuda.so.0" ]; then
+    ok "pywhispercpp $wver com CUDA já instalado"
+    return 0
+  fi
+  # --no-deps no force: o --force-reinstall sozinho reinstala também as dependências
+  # (numpy etc.), que o próprio Kiro Crew usa. A 2ª chamada só completa o que faltar.
+  if [ "$PLAN" -eq 1 ]; then plan "pip install --force-reinstall --no-deps $CACHED_WHEEL"; return 0; fi
+  if [ -n "$CACHED_WHEEL" ] \
+     && "$VENV_PIP" install --quiet --force-reinstall --no-deps "$CACHED_WHEEL" 2>&1 | tail -3 \
+     && "$VENV_PIP" install --quiet "$CACHED_WHEEL" 2>&1 | tail -3; then
     ok "pywhispercpp com CUDA instalado"
   else
     fail "Erro ao compilar/instalar o pywhispercpp com CUDA (rode de novo com --rebuild)"
@@ -181,10 +192,11 @@ step_stt_gpu() {
 step_stt_cpu() {
   echo "▸ [2/7] pywhispercpp para CPU (PyPI)..."
   local force=()
-  # Se o venv tem o build CUDA, troca pelo de CPU.
-  if [ -f "$SITE_PKGS/libggml-cuda.so.0" ]; then force=(--force-reinstall); fi
+  # Se o venv tem o build CUDA, troca pelo de CPU (sem reinstalar as dependências do Crew).
+  if [ -f "$SITE_PKGS/libggml-cuda.so.0" ]; then force=(--force-reinstall --no-deps); fi
   if [ "$PLAN" -eq 1 ]; then plan "pip install ${force[*]} $PYWHISPER_PYPI"; return 0; fi
-  if "$VENV_PIP" install --quiet "${force[@]}" "$PYWHISPER_PYPI" 2>&1 | tail -3; then
+  if "$VENV_PIP" install --quiet "${force[@]}" "$PYWHISPER_PYPI" 2>&1 | tail -3 \
+     && "$VENV_PIP" install --quiet "$PYWHISPER_PYPI" 2>&1 | tail -3; then
     ok "pywhispercpp (CPU) instalado"
   else
     fail "Erro ao instalar o pywhispercpp (CPU)"
