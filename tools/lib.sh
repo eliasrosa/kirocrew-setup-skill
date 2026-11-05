@@ -38,6 +38,32 @@ fi
 LDCONF="/etc/ld.so.conf.d/kirocrew-whisper.conf"
 OVERRIDE_FILE="/etc/systemd/system/kirocrew.service.d/override.conf"
 SERVICE="kirocrew.service"
+CONFIG_FILE="$CREW_HOME/config.json"
+
+# Lê um valor do config.json por caminho pontilhado (ex.: agent.role_models.subagent).
+# Serve de fonte da verdade quando `kirocrew config get/set` responde "Unknown key"
+# em chaves aninhadas (gotcha de role_models no 0.12). Valor ausente => string vazia.
+cfg_json_get() {
+  [ -f "$CONFIG_FILE" ] || return 0
+  [ -x "$VENV_PY" ] || return 0
+  "$VENV_PY" - "$CONFIG_FILE" "$1" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    cfg = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+node = cfg
+for part in sys.argv[2].split('.'):
+    if isinstance(node, dict) and part in node:
+        node = node[part]
+    else:
+        sys.exit(0)
+if isinstance(node, bool):
+    print('true' if node else 'false')
+elif node is not None:
+    print(node)
+PY
+}
 
 # ── Detecção do ambiente ──────────────────────────────────────────────────────
 detect_gpu() {  # nvidia | amd | none

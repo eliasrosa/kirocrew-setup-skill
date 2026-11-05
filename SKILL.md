@@ -82,7 +82,7 @@ trocar o perfil. Falta de `ffmpeg` ou `espeak-ng` vira pendência no resumo fina
 | 1/7 | Pacotes extras: `requirements-transcribe.txt` (perfil `transcribe`) e `.data/extras.txt` do usuário | todos |
 | 2/7 | pywhispercpp: na GPU, do wheel com CUDA guardado (ou compila e guarda); na CPU, do PyPI | `gpu`, `cpu` |
 | 3/7 | ldconfig: registra o site-packages do venv pelo **caminho estável** `<KIROCREW_HOME>-venv-current` | `gpu` |
-| 4/7 | Remove o `LD_PRELOAD` legado do systemd (`--ld-preload` grava, como plano B) | todos |
+| 4/7 | Garante o `LD_PRELOAD` da libggml-cuda no systemd (`gpu`); remove quando STT não é GPU | todos |
 | 5/7 | Config do gateway: STT do perfil, TTS nativo (`system` + voz), modelos de LLM em `auto` | todos |
 | 6/7 | Skills vinculadas: clona se faltar, roda o `tools/install.py` e o `tools/check.py` de cada uma | todos |
 | 7/7 | Reinicia o serviço e confirma `using CUDA0 backend` no log do start atual | todos |
@@ -145,13 +145,17 @@ com versão, no `/etc/ld.so.conf.d/kirocrew-whisper.conf`. Assim o arquivo não 
 no update e não precisa de `sudo` de novo.
 
 A `libggml.so` do pywhispercpp procura a `libggml-cuda` num diretório temporário do build,
-que some depois da instalação. Quem encontra a lib é o cache do ldconfig. Medido no
-0.11.1: sem `LD_PRELOAD`, só com o ldconfig, o whisper sobe com `using CUDA0 backend`.
+que some depois da instalação. No terminal o cache do ldconfig encontra a lib, mas o
+systemd **não herda esse cache de forma confiável**: o whisper acha a GPU no terminal e
+cai para a CPU no serviço. Por isso o passo 4/7 grava o `LD_PRELOAD` da libggml-cuda no
+override do systemd — é o caminho padrão, não um plano B.
 
-O `LD_PRELOAD` no systemd (solução antiga) foi retirado: o gateway repassa o ambiente a
-todo processo filho (bash, git, node, MCPs), e cada um carregava a lib CUDA inteira
-(medido: ~56 ms e ~50 MB a mais por processo). Se o STT cair para CPU mesmo com o
-ldconfig certo, o plano B é `crew-setup.sh --ld-preload`.
+Custo do preload: o gateway repassa o ambiente a todo processo filho (bash, git, node,
+MCPs), e cada um carrega a lib CUDA (medido: ~50-100 ms e ~50 MB a mais por processo).
+É aceitável frente a ter o STT na CPU. O passo 4/7 aponta o preload para o **caminho
+estável** (`<KIROCREW_HOME>-venv-current`), então não envelhece no update; se encontrar
+um preload apontando para venv antigo, corrige. Quando o perfil não é `gpu`, o passo 4/7
+remove qualquer `LD_PRELOAD` legado.
 
 Não transformar `<KIROCREW_HOME>-venv` (sem versão) em link: o Crew trata essa pasta como
 fallback legado e não a renomeia, move ou converte.
@@ -200,7 +204,7 @@ wheel do pywhispercpp.
 | STT sumiu / não transcreve após update | o update recriou o venv e apagou o pywhispercpp | `crew-setup.sh` (passos 1-2) |
 | "perfil STT=gpu, mas não há GPU NVIDIA" | perfil não combina com a máquina | `crew-setup.sh --reconfigure` e escolher `cpu`, `transcribe` ou `off` |
 | "falta o CUDA toolkit (nvcc)" | `nvidia-cuda-toolkit` não instalado | `sudo apt install nvidia-cuda-toolkit`, ou perfil `cpu` |
-| STT roda, mas na CPU ("no GPU found") | build sem CUDA ou `kirocrew-whisper.conf` ausente | `crew-setup.sh` (passos 2-3); se persistir, `--ld-preload` |
+| STT roda, mas na CPU ("no GPU found") | build sem CUDA, `kirocrew-whisper.conf` ausente, ou o systemd não herdou o ldconfig | `crew-setup.sh` (passos 2-4; o passo 4 grava o `LD_PRELOAD` que resolve o caso do systemd) |
 | `ldconfig -p \| grep ggml` vazio | libs do whisper não registradas | `crew-setup.sh` (passo 3) |
 | `ERROR: ld.so: ... cannot be preloaded` em todo comando | `LD_PRELOAD` legado apontando para venv antigo | `crew-setup.sh` (passo 4 remove); no terminal aberto, `unset LD_PRELOAD` |
 | TTS do dashboard com fonética de inglês | provider `piper` removido no 0.11; o fallback `system` sem voz definida | `crew-setup.sh` (passo 5: `system` + `voice_reply.system_voice`) |

@@ -10,7 +10,6 @@
 #   --yes          não pergunta nada: usa o perfil salvo ou o detectado
 #   --plan         mostra ambiente, perfil e passos, sem alterar nada
 #   --rebuild      recompila o pywhispercpp com CUDA (ignora o wheel guardado)
-#   --ld-preload   plano B: força o LD_PRELOAD da libggml-cuda no systemd
 
 set -euo pipefail
 
@@ -25,15 +24,14 @@ fi
 # shellcheck source=lib.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
-RECONFIGURE=0; ASSUME_YES=0; PLAN=0; REBUILD=0; FORCE_PRELOAD=0
+RECONFIGURE=0; ASSUME_YES=0; PLAN=0; REBUILD=0
 for arg in "$@"; do
   case "$arg" in
     --reconfigure) RECONFIGURE=1 ;;
     --yes|-y)      ASSUME_YES=1 ;;
     --plan)        PLAN=1 ;;
     --rebuild)     REBUILD=1 ;;
-    --ld-preload)  FORCE_PRELOAD=1 ;;
-    -h|--help)     sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)     sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Opção desconhecida: $arg (veja --help)"; exit 1 ;;
   esac
 done
@@ -243,31 +241,60 @@ step_ldconfig() {
 # ── 4. LD_PRELOAD no systemd ──────────────────────────────────────────────────
 step_ld_preload() {
   echo "▸ [4/7] LD_PRELOAD no systemd..."
-  local has=0
-  if [ -f "$OVERRIDE_FILE" ] && grep -q 'LD_PRELOAD=.*libggml-cuda' "$OVERRIDE_FILE"; then has=1; fi
+  # O ldconfig funciona no terminal mas o systemd não herda o cache de forma
+  # confiável — o whisper acha a GPU no terminal mas cai pra CPU no unit file.
+  # A solução definitiva é o LD_PRELOAD no override do systemd.
+  #
+  # Nota: o preload carrega a lib em TODO processo filho (bash, git, node), mas
+  # o impacto é ~50-100 ms no spawn e ~50 MB em RSS (aceitável vs STT em CPU).
 
-  if [ "$FORCE_PRELOAD" -eq 1 ]; then
-    # Plano B (--ld-preload): só se o STT cair para CPU mesmo com o ldconfig certo.
-    local lib="$STABLE_SITE/libggml-cuda.so.0"
-    if [ "$PLAN" -eq 1 ]; then plan "gravar LD_PRELOAD=$lib em $OVERRIDE_FILE (sudo)"; return 0; fi
-    sudo mkdir -p "$(dirname "$OVERRIDE_FILE")"
-    printf '[Service]\nEnvironment="LD_PRELOAD=%s"\n' "$lib" | sudo tee "$OVERRIDE_FILE" > /dev/null
-    sudo systemctl daemon-reload
-    warn "LD_PRELOAD gravado (plano B): todo processo filho do gateway passa a carregar a lib CUDA"
+  if [ "$STT" != gpu ]; then
+    # Se não é GPU, remover qualquer LD_PRELOAD legado
+    if [ -f "$OVERRIDE_FILE" ] && grep -q 'LD_PRELOAD=.*libggml-cuda' "$OVERRIDE_FILE"; then
+      if [ "$PLAN" -eq 1 ]; then plan "remover LD_PRELOAD de $OVERRIDE_FILE (STT=$STT)"; return 0; fi
+      sudo sed -i '/LD_PRELOAD=.*libggml-cuda/d' "$OVERRIDE_FILE"
+      if ! grep -qvE '^[[:space:]]*(\[Service\])?[[:space:]]*$' "$OVERRIDE_FILE"; then
+        sudo rm -f "$OVERRIDE_FILE"
+        info "override.conf ficou vazio e foi removido"
+      fi
+      sudo systemctl daemon-reload
+      ok "LD_PRELOAD removido (STT=$STT não precisa)"
+    else
+      ok "Sem LD_PRELOAD (STT=$STT)"
+    fi
     return 0
   fi
 
-  if [ "$has" -eq 0 ]; then ok "Sem LD_PRELOAD (não é necessário)"; return 0; fi
-  info "LD_PRELOAD legado encontrado: o ldconfig já resolve a lib, e o preload pesava"
-  info "em todo processo filho do gateway (bash, git, node: ~56 ms e ~50 MB cada)."
-  if [ "$PLAN" -eq 1 ]; then plan "remover a linha LD_PRELOAD de $OVERRIDE_FILE (sudo)"; return 0; fi
-  sudo sed -i '/LD_PRELOAD=.*libggml-cuda/d' "$OVERRIDE_FILE"
-  if ! grep -qvE '^[[:space:]]*(\[Service\])?[[:space:]]*$' "$OVERRIDE_FILE"; then
-    sudo rm -f "$OVERRIDE_FILE"
-    info "override.conf ficou vazio e foi removido"
+  # STT=gpu: garantir que o LD_PRELOAD está configurado
+  local lib="$STABLE_SITE/libggml-cuda.so.0"
+  if [ ! -f "$lib" ]; then
+    fail "libggml-cuda.so.0 não existe em $STABLE_SITE"
+    return 0
   fi
+
+  # Verificar se já está configurado com o path correto
+  local current=""
+  if [ -f "$OVERRIDE_FILE" ]; then
+    current="$(grep -oP 'LD_PRELOAD=\K[^"]+' "$OVERRIDE_FILE" 2>/dev/null | head -1 || true)"
+  fi
+
+  if [ "$current" = "$lib" ]; then
+    ok "LD_PRELOAD já configurado: $lib"
+    return 0
+  fi
+
+  if [ "$PLAN" -eq 1 ]; then plan "gravar LD_PRELOAD=$lib em $OVERRIDE_FILE (sudo)"; return 0; fi
+
+  # Criar/atualizar o override
+  sudo mkdir -p "$(dirname "$OVERRIDE_FILE")"
+  printf '[Service]\nEnvironment="LD_PRELOAD=%s"\n' "$lib" | sudo tee "$OVERRIDE_FILE" > /dev/null
   sudo systemctl daemon-reload
-  ok "LD_PRELOAD removido"
+
+  if [ -n "$current" ] && [ "$current" != "$lib" ]; then
+    ok "LD_PRELOAD atualizado: $current → $lib"
+  else
+    ok "LD_PRELOAD configurado: $lib"
+  fi
 }
 
 # ── 5. Configurações do gateway ───────────────────────────────────────────────
@@ -292,6 +319,11 @@ step_config() {
     if [ "$PLAN" -eq 1 ]; then plan "$key = $val"; continue; fi
     if $KIROCREW config set "$key" "$val" > /dev/null 2>&1; then
       ok "$key = $val"
+    elif [ "$(cfg_json_get "$key")" = "$val" ]; then
+      # Gotcha: `kirocrew config set` responde "Unknown key" em chaves aninhadas
+      # de role_models (subagent/background) mesmo com o valor já correto no
+      # config.json. Se o valor já é o esperado, não é erro.
+      ok "$key = $val (já aplicado; config set não aceita essa chave aninhada)"
     else
       fail "kirocrew config set $key $val"
     fi

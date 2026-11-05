@@ -68,7 +68,7 @@ perguntar. Para mudar: `--reconfigure`. Para automação sem perguntas: `--yes`.
 | 1/7 | Pacotes extras (Amazon Transcribe, se for o perfil, e os seus em `.data/extras.txt`) |
 | 2/7 | pywhispercpp: na GPU, do wheel com CUDA guardado (compila na 1ª vez, ~10-15 min); na CPU, do PyPI |
 | 3/7 | ldconfig para as libs do whisper, pelo caminho estável `~/.kiro/crew-venv-current` |
-| 4/7 | Remove o `LD_PRELOAD` legado do systemd |
+| 4/7 | Garante o `LD_PRELOAD` da libggml-cuda no systemd (GPU); remove quando o STT não é GPU |
 | 5/7 | Config do gateway: STT do perfil, TTS nativo (`system` + voz), modelos de LLM em `auto` |
 | 6/7 | Skills vinculadas: clona se faltar, roda o `install.py` e o `check.py` de cada uma |
 | 7/7 | Reinicia o Kiro Crew e confirma o STT na GPU |

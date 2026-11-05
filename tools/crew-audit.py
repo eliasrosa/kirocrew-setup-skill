@@ -88,6 +88,13 @@ KNOWN = [
     (r"Event loop is closed|BaseSubprocessTransport.__del__", "info",
      "ruído de shutdown do asyncio no restart", "nenhuma"),
     (r"pam_unix\(sudo:auth\)", "info", "sudo cancelado no terminal", "nenhuma"),
+    (r"Config: .* no longer exist and are ignored; they are dropped", "info",
+     "o update removeu chaves de config obsoletas e o loader as descartou no próximo save",
+     "nenhuma"),
+    (r"App file-explorer backend exited immediately .* \[PORT COLLISION\]|"
+     r"Address already in use", "info",
+     "o app file-explorer disputa a porta no boot quando outro backend já a ocupou (não-fatal, o gateway sobe mesmo assim)",
+     "nenhuma; se o file-explorer precisar subir, liberar a porta e reiniciar"),
 ]
 
 ERR_RE = re.compile(r"\b(ERROR|CRITICAL|WARNING|WARN)\b|Traceback|Error:|failed", re.I)
@@ -300,14 +307,32 @@ def audit_stale_paths() -> None:
     if env_preload and not Path(env_preload).exists():
         found = True
         warn(f"LD_PRELOAD do shell atual aponta para arquivo inexistente: {env_preload} → `unset LD_PRELOAD` ou abrir terminal novo")
+    # O LD_PRELOAD é NECESSÁRIO para STT=gpu no systemd — o ldconfig não basta.
+    # Só alertar se o path estiver errado (venv antigo), não pela existência.
     try:
-        legacy_preload = "LD_PRELOAD" in OVERRIDE_FILE.read_text()
+        override_text = OVERRIDE_FILE.read_text()
     except OSError:
-        legacy_preload = False
-    if legacy_preload:
-        found = True
-        warn(f"{OVERRIDE_FILE} ainda tem LD_PRELOAD: não é necessário com o ldconfig e pesa em todo "
-             "processo filho do gateway → crew-setup.sh (passo 4/7 remove)")
+        override_text = ""
+    preload_match = re.search(r'LD_PRELOAD=([^\s"]+|"[^"]*")', override_text)
+    if preload_match:
+        preload_path = preload_match.group(1).strip('"')
+        if not Path(preload_path).exists():
+            found = True
+            fail(f"{OVERRIDE_FILE} tem LD_PRELOAD apontando para {preload_path} que não existe → rodar crew-setup.sh (passo 4/7)")
+        elif "crew-venv-" in preload_path:
+            # Aceita tanto o symlink estável (crew-venv-current) quanto o venv atual (crew-venv-X.Y.Z)
+            uses_stable = "crew-venv-current" in preload_path
+            uses_current = current and current in preload_path
+            if not uses_stable and not uses_current:
+                found = True
+                fail(f"{OVERRIDE_FILE} tem LD_PRELOAD apontando para venv antigo: {preload_path} → rodar crew-setup.sh (passo 4/7)")
+            elif not uses_stable and uses_current:
+                # Funciona mas vai quebrar no próximo update
+                found = True
+                warn(f"{OVERRIDE_FILE} usa {current} com versão → vai ficar velho no próximo update; "
+                     "crew-setup.sh grava pelo caminho estável crew-venv-current")
+            # Se usa crew-venv-current, tudo ok
+        # Se existe e é válido, ok — não alertar
     if not found:
         ok("nenhuma referência a venv antigo")
 
