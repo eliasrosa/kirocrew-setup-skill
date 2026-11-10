@@ -212,8 +212,14 @@ else
   fi
 fi
 if [ -f "$OVERRIDE_FILE" ] && grep -q 'LD_PRELOAD=.*libggml-cuda' "$OVERRIDE_FILE"; then
-  warn "LD_PRELOAD da libggml-cuda no systemd: não é necessário com o ldconfig e pesa em todo processo filho do gateway"
-  suggest "Rodar crew-setup.sh (passo 4 remove o LD_PRELOAD)"
+  if [ "$STT" = gpu ]; then
+    # LD_PRELOAD é necessário para STT na GPU no systemd — o ldconfig sozinho não basta
+    # porque o systemd não herda o cache de forma confiável.
+    ok "LD_PRELOAD da libggml-cuda no systemd (necessário para STT na GPU)"
+  else
+    warn "LD_PRELOAD da libggml-cuda no systemd: desnecessário (STT=$STT)"
+    suggest "Rodar crew-setup.sh (passo 4 remove o LD_PRELOAD)"
+  fi
 fi
 
 # ── 8. Modelos do whisper ─────────────────────────────────────────────────────
@@ -248,9 +254,15 @@ print("" if v is None else v)' "$CREW_HOME/config.json" "$1" 2>/dev/null)
 }
 
 _config_check() {  # chave esperado descrição
-  local actual
+  local actual expected_norm actual_norm
   actual="$(_config_get "$1")"
-  if [ "${actual,,}" = "${2,,}" ]; then
+  # Normaliza floats terminados em .0 para comparar com int (ex: 90.0 → 90)
+  expected_norm="$2"
+  actual_norm="$actual"
+  if [[ "$actual" =~ ^[0-9]+\.0$ ]]; then
+    actual_norm="${actual%.0}"
+  fi
+  if [ "${actual_norm,,}" = "${expected_norm,,}" ]; then
     ok "$1 = $2 — $3"
   else
     warn "$1 = ${actual:-não definido} (esperado: $2) — $3"

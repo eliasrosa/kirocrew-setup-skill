@@ -102,28 +102,34 @@ NOISE_RE = re.compile(r'^\s*(File "|Traceback|raise |\^|_raise_acp_error|await |
 
 problems: list[str] = []
 warnings: list[str] = []
+quiet_mode = False
 
 
 def ok(msg: str) -> None:
-    print(f"  ✅  {msg}")
+    if not quiet_mode:
+        print(f"  ✅  {msg}")
 
 
 def warn(msg: str) -> None:
-    print(f"  ⚠️   {msg}")
+    if not quiet_mode:
+        print(f"  ⚠️   {msg}")
     warnings.append(msg)
 
 
 def fail(msg: str) -> None:
-    print(f"  ❌  {msg}")
+    if not quiet_mode:
+        print(f"  ❌  {msg}")
     problems.append(msg)
 
 
 def info(msg: str) -> None:
-    print(f"  ℹ️   {msg}")
+    if not quiet_mode:
+        print(f"  ℹ️   {msg}")
 
 
 def section(title: str) -> None:
-    print(f"\n▸ {title}")
+    if not quiet_mode:
+        print(f"\n▸ {title}")
 
 
 def run(cmd: list[str], timeout: int = 60) -> str:
@@ -206,8 +212,9 @@ def audit_logs(since: str | None, current_models: set[str]) -> None:
 
     if unknown:
         warn(f"{sum(unknown.values())} linha(s) sem assinatura conhecida — revisar e, se recorrente, incluir no catálogo KNOWN:")
-        for sig, n in unknown.most_common(10):
-            print(f"       {n:>4}x  {sig}")
+        if not quiet_mode:
+            for sig, n in unknown.most_common(10):
+                print(f"       {n:>4}x  {sig}")
 
 
 # ── 2. Modelos ────────────────────────────────────────────────────────────────
@@ -275,8 +282,9 @@ def audit_models(cfg: dict) -> None:
         else:
             fail(f"{where} = {m} (não existe mais)")
     if any(w not in derived for w, _ in bad):
-        print("       Correção: trocar para 'auto' ou um id disponível. config.json é protegido para o agente:")
-        print("       o usuário roda `kirocrew config set <chave> auto` ou ajusta em Settings no dashboard.")
+        if not quiet_mode:
+            print("       Correção: trocar para 'auto' ou um id disponível. config.json é protegido para o agente:")
+            print("       o usuário roda `kirocrew config set <chave> auto` ou ajusta em Settings no dashboard.")
     else:
         ok(f"{len(refs)} referência(s) de modelo válidas")
 
@@ -395,6 +403,18 @@ def audit_drift(cfg: dict, save: bool) -> None:
         info(f"snapshot atualizado em {BASELINE}")
 
 
+def notify(title: str, message: str, urgency: str = "normal") -> None:
+    """Envia notificação desktop via notify-send (se disponível)."""
+    if shutil.which("notify-send"):
+        try:
+            subprocess.run(
+                ["notify-send", "-u", urgency, title, message],
+                capture_output=True, timeout=5
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+
 def main() -> int:
     # Via sudo o HOME vira /root: a auditoria leria a config e o login do kiro-cli
     # no lugar errado e deixaria .data/ com dono root. Root sem sudo (container) passa.
@@ -406,11 +426,16 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Auditoria pós-update do Kiro Crew")
     ap.add_argument("--since", help="janela do journalctl (padrão: último start do serviço)")
     ap.add_argument("--no-save", action="store_true", help="não atualizar o snapshot de config")
+    ap.add_argument("--quiet", "-q", action="store_true", help="só exit code e notificação, sem output")
     args = ap.parse_args()
 
-    print("\n╔══════════════════════════════════════════════╗")
-    print("║   Kiro Crew — auditoria pós-update           ║")
-    print("╚══════════════════════════════════════════════╝")
+    global quiet_mode
+    quiet_mode = args.quiet
+
+    if not args.quiet:
+        print("\n╔══════════════════════════════════════════════╗")
+        print("║   Kiro Crew — auditoria pós-update           ║")
+        print("╚══════════════════════════════════════════════╝")
 
     cfg = load_config()
     audit_logs(args.since, active_models(cfg))
@@ -420,18 +445,26 @@ def main() -> int:
     if cfg:
         audit_drift(cfg, save=not args.no_save)
 
-    print("\n════════════════════════════════════════════════")
+    if not args.quiet:
+        print("\n════════════════════════════════════════════════")
+        if problems:
+            print(f"  ❌  {len(problems)} problema(s):")
+            for p in problems:
+                print(f"    • {p}")
+        if warnings:
+            print(f"  ⚠️   {len(warnings)} aviso(s):")
+            for w in warnings:
+                print(f"    • {w}")
+        if not problems and not warnings:
+            print("  ✅  Nada a ajustar")
+        print("════════════════════════════════════════════════\n")
+
+    # Notificação desktop
     if problems:
-        print(f"  ❌  {len(problems)} problema(s):")
-        for p in problems:
-            print(f"    • {p}")
-    if warnings:
-        print(f"  ⚠️   {len(warnings)} aviso(s):")
-        for w in warnings:
-            print(f"    • {w}")
-    if not problems and not warnings:
-        print("  ✅  Nada a ajustar")
-    print("════════════════════════════════════════════════\n")
+        notify("Kiro Crew", f"❌ {len(problems)} problema(s) na auditoria", "critical")
+    elif warnings:
+        notify("Kiro Crew", f"⚠️ {len(warnings)} aviso(s) na auditoria", "normal")
+
     return 1 if problems else 0
 
 

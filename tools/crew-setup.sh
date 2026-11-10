@@ -313,6 +313,8 @@ step_config() {
   if [ -n "$TTS_VOICE" ]; then sets+=("voice_reply.system_voice $TTS_VOICE"); fi
   # Modelos em 'auto': id fixo quebra quando o update tira o modelo do catálogo.
   sets+=("agent.model auto" "agent.fallback_model auto" "agent.role_models.subagent auto" "agent.role_models.background auto")
+  # Compactação automática em 90% do contexto (preferência pessoal).
+  sets+=("session.autocompact_pct 90")
 
   for kv in "${sets[@]}"; do
     key="${kv%% *}"; val="${kv#* }"

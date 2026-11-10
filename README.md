@@ -89,7 +89,9 @@ Olha o que o diagnóstico de ambiente não vê:
 - Crash dumps com stack trace
 - Drift de config: compara o `config.json` com o snapshot da auditoria anterior (`.data/config-baseline.json`, fora do git, segredos mascarados)
 
-Rode uma vez com o ambiente saudável para gravar o snapshot. No próximo update, a auditoria mostra exatamente quais chaves mudaram. `--no-save` audita sem atualizar o snapshot; `--since "2 hours ago"` muda a janela do log. Exit 1 quando há problema bloqueante.
+Rode uma vez com o ambiente saudável para gravar o snapshot. No próximo update, a auditoria mostra exatamente quais chaves mudaram. `--no-save` audita sem atualizar o snapshot; `--since "2 hours ago"` muda a janela do log; `--quiet` só retorna o exit code e envia notificação desktop (útil para automação). Exit 1 quando há problema bloqueante.
+
+Se houver problemas ou warnings, o audit envia uma notificação desktop via `notify-send` (se disponível).
 
 Os scripts só alteram a config do Crew com `kirocrew config set`. O agente do Crew não consegue alterar o `config.json` (é protegido), então as correções de config que ele propõe ficam como comando para você rodar.
 
@@ -144,8 +146,33 @@ crew-setup/
     ├── crew-check.sh               # diagnóstico conforme o perfil (só lê)
     ├── crew-setup.sh               # setup/restauração em 7 passos
     ├── crew-audit.py               # auditoria pós-update (logs, modelos, paths, drift)
+    ├── crew.sh                     # wrapper unificado (crew check|setup|audit)
+    ├── crew-completion.bash        # autocomplete para bash
     ├── linked-skills.txt           # skills que o setup restaura
     └── requirements-transcribe.txt # pacotes do perfil transcribe
 ```
+
+## Aliases e autocomplete (opcional)
+
+Para usar `crew` como atalho no terminal, adicione ao `~/.bashrc`:
+
+```bash
+# crew-setup: atalhos para diagnóstico e setup do Kiro Crew
+alias crew='bash ~/.kiro/skills/crew-setup/tools/crew.sh'
+alias crew-check='bash ~/.kiro/skills/crew-setup/tools/crew-check.sh'
+alias crew-setup='bash ~/.kiro/skills/crew-setup/tools/crew-setup.sh'
+alias crew-audit='python3 ~/.kiro/skills/crew-setup/tools/crew-audit.py'
+source ~/.kiro/skills/crew-setup/tools/crew-completion.bash
+```
+
+Com isso:
+
+| Comando | O que faz |
+|---|---|
+| `crew` | diagnóstico (= `crew check`) |
+| `crew setup` | setup/restauração |
+| `crew audit` | auditoria pós-update |
+| `crew <TAB>` | autocomplete de subcomandos |
+| `crew setup <TAB>` | autocomplete de flags (`--plan`, `--reconfigure`, etc.) |
 
 `.data/` (fora do git) guarda o perfil, as personalizações, o snapshot da auditoria e o wheel compilado do pywhispercpp.
